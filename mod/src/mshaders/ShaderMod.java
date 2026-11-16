@@ -125,13 +125,14 @@ public class ShaderMod extends Mod{
 
     /**
      * A thorium reactor has blown up in view for the first time: from now on the settings show "ReactorFUNvalue" under
-     * Lights. Called while the frame is being drawn, so what touches the UI waits until the frame is done.
+     * Lights. The message that pops up only hints at it - where the setting is, is left to be found.
+     * Called while the frame is being drawn, so what touches the UI waits until the frame is done.
      */
     static void foundReactor(){
         Core.settings.put(reactorFound, true);
         Core.app.post(() -> {
             if(folds != null) folds.rebuild();
-            Vars.ui.hudfrag.showToast(Icon.effect, Core.bundle.get("mshaders.reactorfound", "ReactorFUNvalue unlocked"));
+            Vars.ui.hudfrag.showToast(Icon.effect, Core.bundle.get("mshaders.reactorfound", "Thorium wants to shine brighter."));
         });
     }
 
