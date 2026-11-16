@@ -1,0 +1,12 @@
+# test profile of the game (settings, saves, logs) used by tools/run-test.ps1
+/profile/
+# build output: the jars go on the Releases page instead
+/build/
+# test screenshots (hundreds of MB); the few used by the README are in docs/images
+/screenshots/
+# leftovers of the test kit's sprite dumps
+/heightmaps/**/dump.png
+/heightmaps/**/report.txt
+*.tmp
+# paths of this computer (see tools/local.example.ps1)
+/tools/local.ps1

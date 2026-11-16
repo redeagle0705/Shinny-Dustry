@@ -1,0 +1,85 @@
+GIMP Palette
+Name: Normal map faces
+Columns: 16
+#
+170 128 248	dir 0.0 tilt 19
+167 144 248	dir 22.5 tilt 20
+157 157 248	dir 45.0 tilt 19
+144 167 248	dir 67.5 tilt 20
+128 170 248	dir 90.0 tilt 19
+111 167 248	dir 112.5 tilt 20
+ 98 157 248	dir 135.0 tilt 19
+ 88 144 248	dir 157.5 tilt 20
+ 85 128 248	dir 180.0 tilt 19
+ 88 111 248	dir 202.5 tilt 20
+ 98  98 248	dir 225.0 tilt 19
+111  88 248	dir 247.5 tilt 20
+127  85 248	dir 270.0 tilt 19
+144  88 248	dir 292.5 tilt 20
+157  98 248	dir 315.0 tilt 19
+167 111 248	dir 337.5 tilt 20
+202 128 231	dir 0.0 tilt 36
+196 156 231	dir 22.5 tilt 36
+180 180 231	dir 45.0 tilt 36
+156 196 231	dir 67.5 tilt 36
+128 202 231	dir 90.0 tilt 36
+ 99 196 231	dir 112.5 tilt 36
+ 75 180 231	dir 135.0 tilt 36
+ 59 156 231	dir 157.5 tilt 36
+ 53 128 231	dir 180.0 tilt 36
+ 59  99 231	dir 202.5 tilt 36
+ 75  75 231	dir 225.0 tilt 36
+ 99  59 231	dir 247.5 tilt 36
+128  53 231	dir 270.0 tilt 36
+156  59 231	dir 292.5 tilt 36
+180  75 231	dir 315.0 tilt 36
+196  99 231	dir 337.5 tilt 36
+229 128 204	dir 0.0 tilt 53
+222 166 204	dir 22.5 tilt 53
+200 200 204	dir 45.0 tilt 53
+166 222 204	dir 67.5 tilt 53
+128 229 204	dir 90.0 tilt 53
+ 89 222 204	dir 112.5 tilt 53
+ 55 200 204	dir 135.0 tilt 53
+ 33 166 204	dir 157.5 tilt 53
+ 26 128 204	dir 180.0 tilt 53
+ 33  89 204	dir 202.5 tilt 53
+ 55  55 204	dir 225.0 tilt 53
+ 89  33 204	dir 247.5 tilt 53
+128  26 204	dir 270.0 tilt 53
+166  33 204	dir 292.5 tilt 53
+200  55 204	dir 315.0 tilt 53
+222  89 204	dir 337.5 tilt 53
+246 128 175	dir 0.0 tilt 68
+237 173 175	dir 22.5 tilt 68
+211 211 175	dir 45.0 tilt 68
+173 237 175	dir 67.5 tilt 68
+128 246 175	dir 90.0 tilt 68
+ 82 237 175	dir 112.5 tilt 68
+ 44 211 175	dir 135.0 tilt 68
+ 18 173 175	dir 157.5 tilt 68
+  9 128 175	dir 180.0 tilt 68
+ 18  82 175	dir 202.5 tilt 68
+ 44  44 175	dir 225.0 tilt 68
+ 82  18 175	dir 247.5 tilt 68
+128   9 175	dir 270.0 tilt 68
+173  18 175	dir 292.5 tilt 68
+211  44 175	dir 315.0 tilt 68
+237  82 175	dir 337.5 tilt 68
+254 128 144	dir 0.0 tilt 83
+244 176 144	dir 22.5 tilt 83
+217 217 144	dir 45.0 tilt 83
+176 244 144	dir 67.5 tilt 83
+128 254 144	dir 90.0 tilt 83
+ 79 244 144	dir 112.5 tilt 83
+ 38 217 144	dir 135.0 tilt 83
+ 11 176 144	dir 157.5 tilt 83
+  1 128 144	dir 180.0 tilt 83
+ 11  79 144	dir 202.5 tilt 83
+ 38  38 144	dir 225.0 tilt 83
+ 79  11 144	dir 247.5 tilt 83
+127   1 144	dir 270.0 tilt 83
+176  11 144	dir 292.5 tilt 83
+217  38 144	dir 315.0 tilt 83
+244  79 144	dir 337.5 tilt 83
+128 128 255	level

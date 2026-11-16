@@ -1,0 +1,109 @@
+#define HIGHP
+
+// Last step: the finished world image goes to the screen through this shader (the UI is drawn afterwards, untouched).
+// Order: metal glint on blocks, light from light sources, colour pass. Each part is skipped when its strength is 0.
+uniform sampler2D u_texture;   // the world
+uniform sampler2D u_lightmap;  // quarter-size light (mshaders-light.frag, mode 0)
+uniform sampler2D u_aim;       // quarter-size light direction (mode 1)
+uniform sampler2D u_mask;      // the game's block shadow mask, one texel per tile
+
+uniform vec2 u_campos;         // world position of the lower-left screen corner
+uniform vec2 u_resolution;     // camera size in world units
+uniform vec2 u_world;          // map size in world units
+uniform float u_time;          // seconds
+
+uniform float u_light;         // light strength, 0 = off
+uniform float u_glint;         // glint strength, 0 = off
+uniform float u_aimed;         // 1 when u_aim holds this frame's light directions
+uniform float u_band;          // strength of the drifting sun band, 0 = no band
+
+uniform sampler2D u_surface;   // the normals drawn for this frame (Surfaces.draw); alpha = 1 where a normal-mapped building is
+uniform float u_shape;         // 1 when u_surface is bound
+
+uniform float u_vignette;      // 0 = none, 1 = corners fully dark
+uniform float u_saturation;    // 1 = unchanged
+uniform float u_contrast;      // 1 = unchanged
+uniform float u_warmth;        // 0 = unchanged, + warmer, - cooler
+
+varying vec2 v_texCoords;
+
+const vec2 baked = vec2(0.7071, 0.7071);  // block sprites are painted as if lit from the upper right
+
+float luma(vec3 c){
+    return dot(c, vec3(0.299, 0.587, 0.114));
+}
+
+float lumaAt(vec2 uv){
+    return luma(texture2D(u_texture, uv).rgb);
+}
+
+void main(){
+    vec2 uv = v_texCoords;
+    vec3 color = texture2D(u_texture, uv).rgb;
+    vec2 world = uv * u_resolution + u_campos;
+
+    // Blocks with a normal map (Surfaces.java) get their shading and their glint in the middle of the frame
+    // (mshaders-shape.frag), under the units. Here they are only left out, so the glint below is not laid on twice.
+    bool shaped = false;
+    if(u_shape > 0.001){
+        shaped = texture2D(u_surface, uv).a > 0.5;
+    }
+
+    if(u_glint > 0.001 && !shaped){
+        float block = smoothstep(0.55, 0.90, (1.0 - texture2D(u_mask, (world + 4.0) / u_world).r) / 0.71);
+        if(block > 0.01){
+            // Block sprites use three tones per material: light = faces turned to the upper right (and raised tops),
+            // mid = flat, dark = faces turned away. Brightness minus the brightness around it therefore says which way
+            // a face leans, whatever the material's own brightness is. Sprites have 4 texels per world unit.
+            vec2 px = 0.25 / u_resolution;
+            float r = 6.0, k = 4.24;
+            float around = (
+                lumaAt(uv + vec2(r, 0.0) * px) + lumaAt(uv + vec2(-r, 0.0) * px) +
+                lumaAt(uv + vec2(0.0, r) * px) + lumaAt(uv + vec2(0.0, -r) * px) +
+                lumaAt(uv + vec2(k, k) * px) + lumaAt(uv + vec2(-k, k) * px) +
+                lumaAt(uv + vec2(k, -k) * px) + lumaAt(uv + vec2(-k, -k) * px)) / 8.0;
+            float lean = (luma(color) - around) / 0.09;
+            // sprite tones are flat, so these two follow the painted edges exactly
+            float lit = smoothstep(0.20, 0.45, lean);     // light-tone face: turned to the upper right, or a raised top
+            float away = smoothstep(0.20, 0.45, -lean);   // dark-tone face: turned to the lower left
+
+            // sunlight from the upper right: a faint sheen on the lit faces, and a bright band that drifts across the map
+            float band = pow(0.5 + 0.5 * sin((dot(world, baked) / 170.0 - u_time * 0.22) * 6.2832), 28.0);
+            float shine = lit * (0.05 + 0.30 * band * u_band);
+
+            // moving lights: faces turned towards the light catch it (lit faces for a light to the upper right,
+            // dark faces for one to the lower left)
+            if(u_aimed > 0.5){
+                vec2 a = texture2D(u_aim, uv).rg * 2.0 - 1.0;
+                float len = length(a);
+                if(len > 0.03){
+                    float toward = dot(baked, a / len);
+                    shine += (lit * max(toward, 0.0) + away * max(-toward, 0.0)) * min(len * 2.5, 1.0) * 0.32;
+                }
+            }
+            // metal: the highlight keeps most of the material's own colour
+            shine *= block * u_glint;
+            color += color * shine + vec3(1.0, 0.98, 0.92) * shine * 0.15;
+        }
+    }
+
+    if(u_light > 0.001){
+        // Bright maps: a lamp in daylight. The light cannot burn the picture out: its amount levels off (1 - exp), and
+        // what is already bright gains little while darker ground and shade gain more. Mostly it lights up what is
+        // there (colour * light), plus a little glow of its own.
+        vec3 l = vec3(1.0) - exp(-texture2D(u_lightmap, uv).rgb * 1.4);
+        float room = 1.0 - luma(color);
+        color += (color * 0.9 + 0.06) * l * u_light * (0.12 + 0.88 * room * room);
+    }
+
+    float gray = luma(color);
+    color = mix(vec3(gray), color, u_saturation);
+    color = (color - 0.5) * u_contrast + 0.5;
+    color *= vec3(1.0 + 0.10 * u_warmth, 1.0 + 0.02 * u_warmth, 1.0 - 0.10 * u_warmth);
+
+    // oval vignette: 0 in the middle, 1 in the corners
+    float d = length(uv - 0.5) * 1.4142;
+    color *= 1.0 - smoothstep(0.45, 1.0, d) * u_vignette;
+
+    gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+}

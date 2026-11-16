@@ -1,0 +1,9 @@
+name: "mshaders-testkit"
+displayName: "Mindustry Shaders test kit (test profile only)"
+author: "REDEagle0705, Claude"
+description: "Loads a map, takes screenshots with given settings, writes a report, exits. Does nothing unless -Dmstest.out is set."
+version: "0.0.1"
+main: "mstest.TestKit"
+minGameVersion: "160"
+java: true
+hidden: true

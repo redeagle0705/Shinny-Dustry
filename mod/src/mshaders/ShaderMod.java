@@ -1,0 +1,141 @@
+package mshaders;
+
+import arc.*;
+import arc.math.*;
+import arc.util.*;
+import mindustry.*;
+import mindustry.gen.*;
+import mindustry.mod.*;
+
+/** Visual effects only. Each effect has its own switch in Settings > Shaders and does nothing when switched off. */
+public class ShaderMod extends Mod{
+    // setting keys (stored in the game's settings file)
+    public static final String
+    waterOn = "mshaders-water", waterWave = "mshaders-water-wave", waterSparkle = "mshaders-water-sparkle", waterFoam = "mshaders-water-foam",
+    iceOn = "mshaders-ice", iceStrength = "mshaders-ice-strength",
+    floorsOn = "mshaders-floors", floorRock = "mshaders-floor-rock", floorSand = "mshaders-floor-sand", floorSnow = "mshaders-floor-snow",
+    floorGrass = "mshaders-floor-grass", floorHot = "mshaders-floor-hot", floorMetal = "mshaders-floor-metal", floorRelief = "mshaders-floor-relief",
+    reflectOn = "mshaders-reflect", reflectStrength = "mshaders-reflect-strength",
+    shadowOn = "mshaders-shadow", shadowLength = "mshaders-shadow-length", shadowStrength = "mshaders-shadow-strength", shadowCycle = "mshaders-shadow-cycle", shadowQuality = "mshaders-shadow-quality", sunAngle = "mshaders-sun-angle",
+    lightsOn = "mshaders-lights", lightsStrength = "mshaders-lights-strength", darkDepth = "mshaders-dark-depth", lightsColor = "mshaders-lights-color", lightsMoving = "mshaders-lights-moving", lightsMax = "mshaders-lights-max", lightsAir = "mshaders-lights-air",
+    glintOn = "mshaders-glint", glintStrength = "mshaders-glint-strength", glintBand = "mshaders-glint-band",
+    normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsHeight = "mshaders-normals-height",
+    postOn = "mshaders-post", vignette = "mshaders-vignette", saturation = "mshaders-saturation", contrast = "mshaders-contrast", warmth = "mshaders-warmth";
+
+    public final WaterFx water = new WaterFx();
+    public final Scene scene = new Scene();
+    public final ShadowFx shadow = new ShadowFx();
+    public final IceFx ice = new IceFx();
+    public final FloorFx floors = new FloorFx();
+
+    /** Called on the main thread after every game module is initialized (ClientLauncher.update), so GL objects can be made here. */
+    @Override
+    public void init(){
+        if(Vars.headless) return;
+
+        Core.settings.defaults(
+            waterOn, true, waterWave, 100, waterSparkle, 100, waterFoam, 100,
+            iceOn, true, iceStrength, 100,
+            floorsOn, true, floorRock, 100, floorSand, 100, floorSnow, 100, floorGrass, 100, floorHot, 100, floorMetal, 100, floorRelief, 100,
+            reflectOn, true, reflectStrength, 100,
+            shadowOn, true, shadowLength, 15, shadowStrength, 70, shadowCycle, 4, shadowQuality, 80, sunAngle, 45,
+            lightsOn, true, lightsStrength, 100, darkDepth, 50, lightsColor, 100, lightsMoving, 100, lightsMax, 64, lightsAir, 100,
+            glintOn, true, glintStrength, 100, glintBand, 100,
+            normalsOn, true, normalsStrength, 100, normalsHeight, true,
+            postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15
+        );
+
+        // the sprites this mod replaces get back the dark outline the game's own sprites have (turret heads, mass driver)
+        int outlines = Outlines.apply();
+        if(outlines > 0) Log.info("[mshaders] outlines painted around @ replaced sprite(s)", outlines);
+
+        // the scene registers its frame hooks first, so its buffer is open before the others run
+        scene.init();
+        water.init(scene);
+        shadow.init(scene);
+        ice.init(scene);
+        floors.init();
+
+        Vars.ui.settings.addCategory(Core.bundle.get("mshaders.category", "Shaders"), Icon.effect, t -> {
+            t.checkPref(waterOn, true);
+            t.sliderPref(waterWave, 100, 0, 200, 5, i -> i + "%");
+            t.sliderPref(waterSparkle, 100, 0, 200, 5, i -> i + "%");
+            t.sliderPref(waterFoam, 100, 0, 200, 5, i -> i + "%");
+            t.checkPref(iceOn, true);
+            t.sliderPref(iceStrength, 100, 0, 200, 5, i -> i + "%");
+            t.checkPref(floorsOn, true);
+            for(String key : new String[]{floorRock, floorSand, floorSnow, floorGrass, floorHot, floorMetal, floorRelief}){
+                t.sliderPref(key, 100, 0, 200, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
+            }
+            t.checkPref(reflectOn, true);
+            t.sliderPref(reflectStrength, 100, 0, 200, 5, i -> i + "%");
+            t.checkPref(shadowOn, true);
+            t.sliderPref(shadowLength, 15, 0, 40, 1, i -> Strings.autoFixed(i / 10f, 1));
+            t.sliderPref(shadowStrength, 70, 0, 100, 5, i -> i + "%");
+            t.sliderPref(shadowQuality, 80, 0, 100, 5, i -> i + "%");
+            t.sliderPref(sunAngle, 45, 0, 355, 5, i -> i + "°");
+            t.sliderPref(shadowCycle, 4, 0, 30, 1, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : Core.bundle.format("mshaders.minutes", i));
+            t.checkPref(lightsOn, true);
+            t.sliderPref(lightsStrength, 100, 0, 200, 5, i -> i + "%");
+            t.sliderPref(darkDepth, 50, 0, 100, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
+            t.sliderPref(lightsColor, 100, 0, 200, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
+            t.sliderPref(lightsMoving, 100, 100, 500, 25, i -> i + "%");
+            t.sliderPref(lightsMax, 64, 16, Scene.maxLights, 16, i -> i + "");
+            t.sliderPref(lightsAir, 100, 0, 300, 25, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
+            t.checkPref(glintOn, true);
+            t.sliderPref(glintStrength, 100, 0, 200, 5, i -> i + "%");
+            t.sliderPref(glintBand, 100, 0, 200, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
+            t.checkPref(normalsOn, true);
+            t.sliderPref(normalsStrength, 100, 0, 200, 5, i -> i + "%");
+            t.checkPref(normalsHeight, true);
+            t.checkPref(postOn, true);
+            t.sliderPref(vignette, 35, 0, 100, 5, i -> i + "%");
+            t.sliderPref(saturation, 115, 0, 200, 5, i -> i + "%");
+            t.sliderPref(contrast, 108, 50, 150, 2, i -> i + "%");
+            t.sliderPref(warmth, 15, -100, 100, 5, i -> (i > 0 ? "+" : "") + i);
+        });
+
+        Log.info("[mshaders] water shader: @, ice shader: @, ground shaders: @, screen effects: @, light listener: @, directional shadows: @",
+            state(water.ready()), state(ice.ready()), state(floors.ready()), state(scene.ready()), state(scene.lightsReady()), state(shadow.ready()));
+    }
+
+    private static String state(boolean ready){
+        return ready ? "ok" : "unavailable";
+    }
+
+    /**
+     * Reads a shader file from shaders/ (the mod's or the game's) and puts the named file in place of every line of the
+     * form  #include "name"  - GLSL has no include of its own.
+     */
+    static String source(String name){
+        StringBuilder out = new StringBuilder();
+        for(String line : Vars.tree.get("shaders/" + name).readString().split("\n")){
+            String trimmed = line.trim();
+            if(trimmed.startsWith("#include \"") && trimmed.endsWith("\"")){
+                out.append(source(trimmed.substring(10, trimmed.length() - 1)));
+            }else{
+                out.append(line);
+            }
+            out.append('\n');
+        }
+        return out.toString();
+    }
+
+    /** Direction towards the sun on the ground, as the setting says: 0 = right, 90 = up. One value for shadows, normal-map shading and ground relief. */
+    static float sunX(){
+        return Mathf.cosDeg(Core.settings.getInt(sunAngle, 45));
+    }
+
+    static float sunY(){
+        return Mathf.sinDeg(Core.settings.getInt(sunAngle, 45));
+    }
+
+    /** How much daylight the map has: 1 on a bright map; on a dark one what its darkness leaves, but not less than 0.15. The sun counts by this much. */
+    static float daylight(){
+        return Vars.state.rules.lighting ? Math.max(1f - Vars.state.rules.ambientLight.a, 0.15f) : 1f;
+    }
+
+    static float percent(String key, int def){
+        return Core.settings.getInt(key, def) / 100f;
+    }
+}

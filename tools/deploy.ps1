@@ -1,0 +1,54 @@
+# Puts the built mod into a Mindustry mods folder as an unpacked folder mod (the game loads a folder the same as a jar).
+# Usage: powershell -ExecutionPolicy Bypass -File tools\deploy.ps1
+#        powershell -ExecutionPolicy Bypass -File tools\deploy.ps1 -Target "D:\somewhere\mods\mshaders"
+#
+# What it does: unpacks build\mshaders.jar into build\deploy-stage, then makes the target folder an exact copy of it.
+# "Exact copy" means files in the target that are not in the build are DELETED - so keep nothing of your own inside the
+# mod folder. Your own normal maps and block heights belong next to the mods folder, where a deploy never reaches:
+#   <data folder>\mshaders-normals\<block name>.png      and      <data folder>\mshaders-heights.properties
+# (for the Steam game the data folder is ...\steamapps\common\Mindustry\saves).
+#
+# It touches nothing but that one folder, and refuses to run unless the folder is called "mshaders", sits in a folder
+# called "mods", and - if it already exists - holds this mod (mod.hjson with name "mshaders").
+# The game reads mods when it starts: restart it to see the change. This script never starts or closes the game.
+#
+# Without -Target the folder is taken from tools\local.ps1 ($LocalDeployTarget).
+param([string]$Target = "")
+
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot
+$paths = Join-Path $PSScriptRoot "local.ps1"
+if (-not (Test-Path $paths)) { throw "tools\local.ps1 not found: copy tools\local.example.ps1 to tools\local.ps1 and put in your own paths" }
+. $paths
+$jdk = $LocalJdkBin
+if ($Target -eq "") { $Target = $LocalDeployTarget }
+$jar = Join-Path $root "build\mshaders.jar"
+if (-not (Test-Path $jar)) { throw "build\mshaders.jar not found (run tools\build.ps1)" }
+
+$Target = [IO.Path]::GetFullPath($Target)
+if ((Split-Path -Leaf $Target) -ne "mshaders") { throw "target must be a folder named mshaders: $Target" }
+$mods = Split-Path -Parent $Target
+if ((Split-Path -Leaf $mods) -ne "mods" -or -not (Test-Path $mods)) { throw "target must sit in an existing folder named mods: $Target" }
+if (Test-Path $Target) {
+    $meta = Join-Path $Target "mod.hjson"
+    if (-not (Test-Path $meta) -or -not (Select-String -Path $meta -Pattern 'name:\s*"mshaders"' -Quiet)) {
+        throw "the target exists but does not hold this mod (no mod.hjson with name mshaders): $Target"
+    }
+}
+
+$stage = Join-Path $root "build\deploy-stage"
+if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
+New-Item -ItemType Directory -Force $stage | Out-Null
+Push-Location $stage
+try { & "$jdk\jar.exe" xf $jar } finally { Pop-Location }
+if ($LASTEXITCODE -ne 0) { throw "unpacking the jar failed" }
+$hash = (Get-FileHash -Algorithm SHA256 $jar).Hash.ToLower()
+"built $((Get-Item $jar).LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss')), jar sha256 $hash" | Out-File -Encoding utf8 (Join-Path $stage "mshaders-build.txt")
+
+# /MIR = make the target an exact copy (copies new and changed files, deletes the rest)
+& robocopy $stage $Target /MIR /NJH /NJS /NDL /NP /R:1 /W:1 | Out-Null
+if ($LASTEXITCODE -ge 8) { throw "copy failed (robocopy code $LASTEXITCODE) - is the folder writable, is a file in use?" }
+$count = (Get-ChildItem $Target -Recurse -File | Measure-Object).Count
+Write-Output "deployed $count files to $Target"
+Write-Output "jar sha256 $hash"
+Write-Output "restart the game to load it"

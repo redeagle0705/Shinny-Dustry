@@ -1,0 +1,215 @@
+#define HIGHP
+
+// How many light sources the arrays below have room for. Scene.java writes its own #define MAX_LIGHTS in front of this
+// file (256 if the graphics card takes that many, else 64); the lights actually used each frame are u_count of them.
+#ifndef MAX_LIGHTS
+#define MAX_LIGHTS 64
+#endif
+
+// Light from the recorded light sources, stopped by blocks. Drawn into a quarter-size buffer.
+// u_texture: what stops light, one texel per tile - normally the picture of solid blocks (Occluders.java),
+// as a fallback the game's block shadow mask.
+// For every light in reach, the line from this point to the light is walked tile by tile; tiles with a block on them
+// take the light away. Two stretches of that line do not count: the block this point is on (so the side of a wall that
+// faces the light is lit, up to OWN units deep) and the block the light sits in (so a lamp shines out of its own tile).
+uniform sampler2D u_texture;
+uniform float u_masked;     // 1 when u_texture really is the mask; 0 = no mask this frame, nothing is blocked
+uniform float u_own;        // 1: u_texture is the mod's own picture of solid blocks (white = block); 0: the game's shadow mask
+
+uniform vec2 u_campos;      // world position of the lower-left screen corner
+uniform vec2 u_resolution;  // camera size in world units
+uniform vec2 u_world;       // map size in world units
+
+// 0: light colour to add on top of the picture (maps without the lighting rule)
+// 1: the direction the light comes from (for the glint)
+// 2: the game's own light buffer for dark maps: rgb = light colour, a = how much light, as LightRenderer.draw() makes it
+// 3: how near the light is, 1 = inside a light, falling to 0 at WIDE times its radius (for deepening the dark far from light)
+uniform int u_mode;
+uniform int u_count;
+uniform vec4 u_lights[MAX_LIGHTS];  // x, y, radius, opacity
+uniform vec4 u_colors[MAX_LIGHTS];  // rgb = colour; a = what the light sits in (see reach), or 1000 + how high it hangs (flying units)
+
+varying vec2 v_texCoords;
+
+const int MAX_TILES = 128;  // tiles walked at most towards one light (about 90 tiles of distance); beyond that nothing blocks
+const float OWN = 1.5;      // tiles
+const float WIDE = 2.8;     // mode 3: a light is "near" up to this many radii away
+
+const float TALLEST = 3.0;  // tiles: the tallest a block can be (Heights.max)
+
+// How tall the block on that tile is, in tiles (Occluders.java keeps it in blue); one tile where only the game's mask is there.
+float tallOn(vec2 cell){
+    return u_own > 0.5 ? texture2D(u_texture, (cell + 0.5) * 8.0 / u_world).b * TALLEST : 1.0;
+}
+
+// 1 when a block that stops light stands on that tile (whole tile numbers; read at the texel centre, so the value is exact).
+// The game's shadow mask stores 1 - 0.71 for a block (BlockRenderer.blendShadowColor).
+float blockOn(vec2 cell){
+    float v = texture2D(u_texture, (cell + 0.5) * 8.0 / u_world).r;
+    return step(0.5, u_own > 0.5 ? v : clamp((1.0 - v) / 0.71, 0.0, 1.0));
+}
+
+// Two blocks that touch have no edge between them. "toward" points across the line, to the side of the tile the
+// point is nearer to: if a block stands on the tile next door on that side too, no light may get through there.
+// (Without this, softening each tile on its own let light leak along every seam of a row of blocks.)
+float joined(vec2 cell, vec2 toward){
+    float j = 0.0;
+    if(abs(toward.x) > 0.3) j = max(j, blockOn(cell + vec2(sign(toward.x), 0.0)));
+    if(abs(toward.y) > 0.3) j = max(j, blockOn(cell + vec2(0.0, sign(toward.y))));
+    if(abs(toward.x) > 0.3 && abs(toward.y) > 0.3) j = max(j, blockOn(cell + sign(toward)));
+    return j;
+}
+
+// How much of a light at "to" reaches the point "from" (world units): 1 = all of it, 0 = none.
+// The line between them is walked tile by tile - every tile it crosses, once, in order - so no block is stepped over
+// however far away the light is. (Before, the line was read at 20 evenly spaced points: far from a lamp those points
+// lay several tiles apart and fell on a block or beside it by chance, so the shade behind a block broke up into blobs.)
+// A block shades the point by how far inside the block's outline, seen from the light, the line runs; that edge is
+// softer the further the point is behind the block.
+// "lamp" says what the light sits in (Scene.pickLights): its last two digits before the point are the distance from the
+// light, in tiles, inside which blocks belong to the light's own building (0 = not known, a tile and a half is
+// assumed); 100 or more means the light is a core, whose light also passes through whatever touches the core.
+//
+// 1000 or more: the light hangs in the air, lamp - 1000 world units up (the glow of a flying unit). It shines down
+// over the blocks: the top of a block is lit whatever stands around it, and a block is in the way of a point on the
+// ground only while the line from the point up to the light is still lower than the block - up to
+// (height of the block) * (distance to the light) / (height of the light) from the point. So blocks throw short
+// shadows away from the unit, longer the further from it, instead of cutting its light off like a wall cuts a lamp's.
+float reach(vec2 from, vec2 to, float lamp){
+    if(u_masked < 0.5) return 1.0;
+    vec2 p = (from + 4.0) / 8.0, q = (to + 4.0) / 8.0;   // in tiles; tile n covers n .. n + 1
+    float len = distance(p, q);
+    if(len < 0.001) return 1.0;
+    float air = lamp >= 1000.0 ? (lamp - 1000.0) / 8.0 : 0.0;   // tiles above the ground
+    if(air > 0.0){
+        lamp = 0.0;
+        if(blockOn(floor(p)) > 0.5) return 1.0;
+    }
+    // per tile of block height, how far from the point a block can still be in the way
+    float perTall = air > 0.0 ? len / air : 0.0;
+    vec2 dir = (q - p) / len;
+    // the direction with neither part exactly zero, so the divisions below are safe
+    vec2 safe = vec2(abs(dir.x) < 0.0001 ? 0.0001 : dir.x, abs(dir.y) < 0.0001 ? 0.0001 : dir.y);
+    vec2 way = sign(safe);
+    vec2 crossing = abs(1.0 / safe);                 // distance along the line between two tile borders, in x and in y
+    vec2 cell = floor(p);
+    vec2 next = (cell + max(way, 0.0) - p) / safe;   // distance to the next border in x and in y
+    vec2 across = vec2(-dir.y, dir.x);
+    float halfWidth = 0.5 * (abs(across.x) + abs(across.y));
+    // A lamp shines out of the block it sits in - all of it, however large (a core's own corners used to stop the
+    // core's light and left black tiles at its corners).
+    float ownReach = mod(lamp, 100.0);
+    if(ownReach < 0.01) ownReach = OWN + 0.7;
+    // A core lights through the blocks that touch it as well (containers set against it are part of it): the run of
+    // blocks the walk ends in, when it ends at a core, lets the light through if it is no longer than this.
+    float attached = lamp >= 100.0 ? 9.0 : 0.0;
+    bool lampInside = air <= 0.0 && blockOn(floor(q)) > 0.5;
+    // still inside the block this point is on: its side that faces the light is lit, up to OWN tiles deep
+    bool starting = true;
+    // "through": light left after the runs of blocks already walked past; "run": after the run the walk is in now
+    float t = 0.0, through = 1.0, run = 1.0, runStart = 0.0;
+    bool inRun = false;
+    for(int i = 0; i < MAX_TILES; i++){
+        if(blockOn(cell) > 0.5){
+            if(!inRun){
+                inRun = true;
+                run = 1.0;
+                runStart = t;
+            }
+            bool spared = (starting && t < OWN) || (lampInside && len - t < ownReach);
+            if(!spared){
+                float lateral = dot(p - (cell + 0.5), across);
+                float margin = halfWidth - abs(lateral);
+                float side = smoothstep(0.0, clamp(0.10 + 0.04 * t, 0.10, 0.45), margin);
+                if(side < 0.999) side = max(side, joined(cell, across * (lateral < 0.0 ? -1.0 : 1.0)));
+                if(air > 0.0){
+                    // a light in the air: this block is in the way only this near to the point (the end of its shadow, softened)
+                    float far = tallOn(cell) * perTall;
+                    side *= 1.0 - smoothstep(far * 0.6, far, t);
+                }
+                run *= 1.0 - side;
+            }
+        }else{
+            starting = false;
+            if(inRun){
+                // out of a run of blocks: what it took away counts
+                inRun = false;
+                through *= run;
+                if(through < 0.01) return 0.0;
+            }
+        }
+        if(next.x < next.y){
+            t = next.x;
+            next.x += crossing.x;
+            cell.x += way.x;
+        }else{
+            t = next.y;
+            next.y += crossing.y;
+            cell.y += way.y;
+        }
+        if(t >= len) break;
+        // a light in the air: further from the point than this, the line to it runs above every block
+        if(air > 0.0 && t > TALLEST * perTall) break;
+    }
+    // The walk ended inside a run of blocks. If that is a core with what touches it, the light passes; otherwise the
+    // run counts like any other.
+    if(inRun && !(lampInside && len - runStart < attached)) through *= run;
+    return through;
+}
+
+void main(){
+    vec2 world = v_texCoords * u_resolution + u_campos;
+    vec3 sum = vec3(0.0);
+    vec2 aim = vec2(0.0);
+    float most = 0.0, total = 0.0;
+
+    for(int i = 0; i < MAX_LIGHTS; i++){
+        if(i >= u_count) break;
+        vec4 l = u_lights[i];
+        vec2 d = l.xy - world;
+        float along = length(d);        // distance on the ground
+        float dist = along, strength = l.w, sideways = 1.0;
+        // A light that hangs "high" world units up (the glow of a flying unit): what counts is how much further away
+        // it is than from the spot right under it. Under the unit that changes little with every step - a wide, even
+        // pool instead of a hot spot - and the pool reaches further out; spread over more ground, it is fainter.
+        float high = u_colors[i].a >= 1000.0 ? u_colors[i].a - 1000.0 : 0.0;
+        if(high > 0.0){
+            float slant = sqrt(along * along + high * high);
+            dist = slant - high;
+            strength *= l.z / (l.z + high);
+            sideways = along / slant;   // how much of the light comes from the side rather than from above
+        }
+        float rad = u_mode == 3 ? l.z * WIDE : l.z;
+        if(dist >= rad) continue;
+
+        float open = reach(world, l.xy, u_colors[i].a);
+        vec3 c = u_colors[i].rgb;
+        if(u_mode == 3){
+            // full inside the lit circle, fading out to WIDE radii; weak lights count less; behind a block it is
+            // "a little light" rather than none, so shade next to a lamp does not turn pitch black
+            float f = (1.0 - smoothstep(0.7, WIDE, dist / l.z)) * smoothstep(0.0, 0.5, l.w) * mix(0.45, 1.0, open);
+            most = max(most, f);
+        }else if(u_mode == 2){
+            // same fall-off as the game's light sprite "circle-shadow" (measured: 1 until 0.2 of the radius, 0.73 at half, 0 at the rim)
+            float f = (1.0 - smoothstep(0.2, 1.0, dist / l.z)) * strength * open;
+            most = max(most, f);
+            sum += c * f;
+            total += f;
+        }else{
+            float f = 1.0 - dist / l.z;
+            f = f * f * strength * open;
+            sum += c * f;
+            aim += d / max(along, 0.001) * sideways * f * dot(c, vec3(0.299, 0.587, 0.114));
+        }
+    }
+
+    if(u_mode == 0){
+        gl_FragColor = vec4(sum, 1.0);
+    }else if(u_mode == 1){
+        gl_FragColor = vec4(0.5 + 0.5 * clamp(aim, -1.0, 1.0), 0.0, 1.0);
+    }else if(u_mode == 3){
+        gl_FragColor = vec4(vec3(most), 1.0);
+    }else{
+        gl_FragColor = vec4(sum / max(total, 0.0001), most);
+    }
+}

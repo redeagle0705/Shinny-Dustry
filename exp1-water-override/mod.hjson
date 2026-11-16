@@ -1,0 +1,7 @@
+name: "exp1-water-override"
+displayName: "EXP1 water.frag override (test only)"
+author: "REDEagle0705, Claude"
+description: "Experiment 1: contains only shaders/water.frag (paints water magenta). Tests whether a file in a mod replaces the built-in water shader."
+version: "0.0.1"
+minGameVersion: "160"
+hidden: true
