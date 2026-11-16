@@ -533,6 +533,12 @@ java tools\HeightGen.java preview heightmaps\silicon-smelter.png heightmaps\sili
 - **주소로 직접 가져오기** (`ModsDialog.java:623-675`): 게임은 저장소의 주 언어가 Java(또는 Kotlin, Groovy, Scala)면 Java 모드로 보고 최신 릴리스의 `.jar`를 받아 설치함. 이 저장소는 GitHub가 주 언어를 Java로 잡고, 릴리스 v0.1.0에 `mshaders.jar`가 붙어 있음. 게임에서 실제로 받아 보는 시험은 하지 않음.
 - **모드 브라우저 목록** (Anuken/MindustryMods의 README와 `ModUpdater.java`): `mindustry-mod` 토픽, 저장소 맨 위나 `assets/`의 `mod.hjson`/`mod.json`, Java 모드는 `minGameVersion` 154 이상과 jar가 붙은 릴리스가 필요. 2시간마다 갱신. 그래서 `mod\mod.hjson`을 저장소 맨 위 `mod.hjson`으로 옮기고 `build.ps1`이 거기서 읽게 함(jar 안의 내용은 전과 같음). 토픽은 저장소 주인이 GitHub에서 넣어야 함.
 
+### 모바일에서는 설치되지 않음 (2026-11-16, 소스 확인)
+
+- 안드로이드: 게임은 Java 모드의 jar에서 `classes.dex`를 찾음(`Mods.java:1162-1163`). 이 모드의 jar에는 `.class`만 있고 `classes.dex`가 없어서 불러오지 못함. 안드로이드용으로 변환(dex)하는 단계를 빌드에 넣지 않았고, 셰이더가 모바일 그래픽에서 도는지도 확인한 적 없음.
+- iOS: 게임이 Java 모드를 받지 않음(`Mods.java:1185-1187`, "Java class mods are not supported on iOS.").
+- README 맨 위에 PC 전용이라고 적음.
+
 ### 블룸 — 새로 만들지 않음, **기본 설정으로 세기 조절 됨 (소스 + 실측)**
 
 - 기본 게임이 매 프레임 설정을 읽음: `bloom.setBloomIntensity(settings.getInt("bloomintensity", 6) / 4f + 1f)`, `bloom.blurPasses = settings.getInt("bloomblur", 1)` (`core/Renderer.java:391-397`).

@@ -2,13 +2,15 @@
 
 Mindustry에 화면 효과만 더하는 Java 모드입니다. 콘텐츠는 추가하지 않고, 모든 효과는 **설정 → 셰이더**에서 하나씩 끌 수 있습니다.
 
-A visual-effects-only Java mod for Mindustry: water, reflections, directional shadows, lights stopped by blocks, and hand-drawn normal maps for blocks. Adds no content; every effect has a switch under Settings → Shaders. Tested on v160.7 only.
+A visual-effects-only Java mod for Mindustry: water, reflections, directional shadows, lights stopped by blocks, and hand-drawn normal maps for blocks. Adds no content; every effect has a switch under Settings → Shaders. Desktop only (no Android or iOS). Tested on v160.7 only.
 
 | 모두 끔 | 모두 켬 |
 |---|---|
 | ![효과를 모두 끈 화면](docs/images/all-off.png) | ![효과를 모두 켠 화면](docs/images/all-on.png) |
 
 > 아직 만드는 중입니다. 공식 **v160.7**에서만 시험했고, 그래픽 카드 한 종류에서만 돌려 봤습니다.
+>
+> **PC(Windows·Linux·Mac)용입니다. 모바일에서는 설치되지 않습니다.** 안드로이드는 Java 모드에 안드로이드용 코드(`classes.dex`)가 들어 있어야 하는데 이 모드의 jar에는 없고, iOS는 게임이 Java 모드를 아예 받지 않습니다.
 
 ## 설치
 
