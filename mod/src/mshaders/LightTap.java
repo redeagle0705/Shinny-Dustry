@@ -129,13 +129,77 @@ public class LightTap extends LightRenderer{
         unitsAt.clear();
         unitRadii.clear();
         for(Unit unit : Groups.unit){
-            // A unit on legs carries its body - and the glow under it - off the ground: a little below the body (UnitShades.lift),
-            // as a share of the height a unit in full flight hangs at.
-            float up = unit instanceof Legsc legged && legged.legs().length > 0 ? Math.max(UnitShades.lift(unit.type, unit.hitSize) - 3f, 1f) / Scene.airLevel
-                : unit.isFlying() ? Mathf.clamp(unit.elevation) : 0f;
-            unitsAt.put(place(unit.x, unit.y), up);
+            unitsAt.put(place(unit.x, unit.y), upOf(unit));
             unitRadii.put(place(unit.x, unit.y), unit.hitSize * 0.5f);
         }
+    }
+
+    /**
+     * How far up a unit is: 0 = on the ground .. 1 = in full flight. A unit on legs carries its body - and the glow
+     * under it - off the ground: a little below the body (UnitShades.lift), as a share of the height a unit in full
+     * flight hangs at.
+     */
+    private static float upOf(Unit unit){
+        return unit instanceof Legsc legged && legged.legs().length > 0 ? Math.max(UnitShades.lift(unit.type, unit.hitSize) - 3f, 1f) / Scene.airLevel
+            : unit.isFlying() ? Mathf.clamp(unit.elevation) : 0f;
+    }
+
+    /** The shots of units that are off the ground, by where each is in this frame. */
+    private final IntMap<Bullet> shotsAt = new IntMap<>();
+    private long shotsFrame = -1;
+    /** A light lower than this is on the ground (world units): the light pass treats the two differently, and close to the ground the difference shows as a jump either way. */
+    private static final float lowest = 2f;
+
+    /** The shot of a unit off the ground that is exactly at that place; null if there is none. */
+    private Bullet shotAt(float x, float y){
+        long frame = Core.graphics.getFrameId();
+        if(frame != shotsFrame){
+            shotsFrame = frame;
+            shotsAt.clear();
+            for(Bullet b : Groups.bullet){
+                if(b.owner instanceof Unit unit && upOf(unit) > 0f) shotsAt.put(place(b.x, b.y), b);
+            }
+        }
+        return shotsAt.isEmpty() ? null : shotsAt.get(place(x, y));
+    }
+
+    /**
+     * How high a shot leaves its unit, in world units: where the unit's own glow hangs.
+     * The game has no heights: the light of a shot is reported at the shot's place on the map, like a lamp standing
+     * there. So a unit in flight had its glow up in the air (airHeight) and its shots crawling along the ground under
+     * it - cut off by every wall the unit itself shone over.
+     */
+    private float muzzle(Bullet b){
+        return b.owner instanceof Unit unit ? upOf(unit) * airHeight : 0f;
+    }
+
+    /**
+     * Does that shot stay at the height it was fired at? One that cannot hit anything on the ground does, and so does
+     * one whose unit is, right now, aiming the weapon it came from at something that flies.
+     */
+    private static boolean staysUp(Bullet b){
+        if(!b.type.collidesGround) return true;
+        if(!b.type.collidesAir || !(b.owner instanceof Unit unit)) return false;
+        for(mindustry.entities.units.WeaponMount mount : unit.mounts){
+            if(mount.weapon.bullet == b.type && mount.target instanceof Unit aimed && aimed.isFlying()) return true;
+        }
+        return false;
+    }
+
+    /**
+     * How high a shot is right now, in world units. Every other shot comes down on its way: it is on the ground where
+     * it was aimed at (how far along the line from where it was fired to there it has come), at the latest when its
+     * time is up (a bomb does not travel, it falls). Linear - nothing here is a real trajectory.
+     */
+    private float shotHeight(Bullet b){
+        float top = muzzle(b);
+        if(top <= 0f || staysUp(b)) return top;
+        float done = b.fin();
+        if(!(b.aimX == -1f && b.aimY == -1f)){
+            float ax = b.aimX - b.originX, ay = b.aimY - b.originY, len2 = ax * ax + ay * ay;
+            if(len2 > 64f) done = Math.max(done, ((b.x - b.originX) * ax + (b.y - b.originY) * ay) / len2);
+        }
+        return top * (1f - Mathf.clamp(done));
     }
 
     /** The radius of the unit a light reported at that place sits on; 0 where no unit is. */
@@ -144,11 +208,19 @@ public class LightTap extends LightRenderer{
         return unitRadii.get(place(x, y), 0f);
     }
 
-    /** How high the light reported at that place hangs: airHeight times how far up the unit there is; 0 where no flying unit is. */
+    /**
+     * How high the light reported at that place hangs: airHeight times how far up the unit there is, or as high as the
+     * shot there is on its way down from its unit; 0 where neither is.
+     */
     private float heightOf(float x, float y){
         if(airHeight <= 0f) return 0f;
         findUnits();
-        return unitsAt.get(place(x, y), 0f) * airHeight;
+        int place = place(x, y);
+        if(unitsAt.containsKey(place)) return unitsAt.get(place, 0f) * airHeight;
+        Bullet shot = shotAt(x, y);
+        if(shot == null) return 0f;
+        float height = shotHeight(shot);
+        return height < lowest ? 0f : height;
     }
 
     /**
@@ -255,8 +327,55 @@ public class LightTap extends LightRenderer{
         return own != null ? own : reported;
     }
 
+    /**
+     * How much stronger the purple glow of an exploding thorium reactor is made (asked for: "about ten times").
+     * The explosion (Fx.reactorExplosion) is some eighty puffs of smoke that drift outwards for eight seconds, each
+     * with a small purple light of its own (Pal.reactorPurple, handed over as that very object - nothing else in the
+     * game lights with it). Like every light made stronger here: k times the opacity (up to 1) and sqrt(k) times the
+     * radius.
+     * The number is the setting "ReactorFUNvalue" (ShaderMod.reactorFun), ten until somebody changes it - and nobody
+     * can before a reactor has blown up in front of them: the first time these lights are seen, the setting appears.
+     */
+    private float reactorBoost = 10f;
+    /**
+     * The colour that glow is given. The game's is a pale lilac (Pal.reactorPurple, bf92f9); made strong it lit the
+     * ground more white and pink than purple. Each part squared over the largest - the same deepening the glow of
+     * lava got (Scene.deep) - gives about 9356f9: the blue stays, red and green fall back.
+     */
+    private static final Color reactorColor = deepened(Pal.reactorPurple);
+
+    private static Color deepened(Color c){
+        float top = Math.max(Math.max(c.r, c.g), Math.max(c.b, 0.001f));
+        return new Color(c.r * c.r / top, c.g * c.g / top, c.b * c.b / top, 1f);
+    }
+    /**
+     * Of those puffs only every fourth is taken as a light. Made this strong, all eighty would take every place under
+     * the light limit for eight seconds, and the lamps of the base around the reactor would go out; at three times the
+     * radius the lights of the puffs overlap so far that a quarter of them floods the same ground.
+     */
+    private static final int reactorEvery = 4;
+    private long reactorFrame = -1;
+    private int reactorSeen;
+
     @Override
     public void add(float x, float y, float radius, Color color, float opacity){
+        if(capture && color == Pal.reactorPurple){
+            long frame = Core.graphics.getFrameId();
+            if(frame != reactorFrame){
+                reactorFrame = frame;
+                reactorSeen = 0;
+                reactorBoost = Math.max(Core.settings.getInt(ShaderMod.reactorFun, 10), 1);
+                if(!Core.settings.getBool(ShaderMod.reactorFound, false)) ShaderMod.foundReactor();
+            }
+            // the same puffs every frame: the effect goes through them in the same order
+            if(reactorSeen++ % reactorEvery != 0){
+                if(gameLighting() && !takeover) super.add(x, y, radius, color, opacity);
+                return;
+            }
+            radius *= Mathf.sqrt(reactorBoost);
+            opacity = Math.min(opacity * reactorBoost, 1f);
+            color = reactorColor;
+        }
         color = ownColor(color);
         if(capture && ofGround(x, y, radius)){
             // kept apart from the light sources: a lake of slag is hundreds of these (see ground)
@@ -303,10 +422,14 @@ public class LightTap extends LightRenderer{
             }
         }
         if(!gameLighting()){
+            // the beam of a shot fired by a unit off the ground starts at that unit's height and slants down to the
+            // ground at its far end (or stays up: staysUp)
+            Bullet shot = airHeight > 0f ? shotAt(x, y) : null;
+            float from = shot == null ? 0f : muzzle(shot), to = shot != null && staysUp(shot) ? from : 0f;
             int n = Mathf.clamp((int)(Mathf.dst(x, y, x2, y2) / Math.max(stroke, 8f)) + 1, 1, 6);
             for(int i = 0; i < n; i++){
-                float f = n == 1 ? 0.5f : i / (float)(n - 1);
-                record(Mathf.lerp(x, x2, f), Mathf.lerp(y, y2, f), stroke * 1.5f, tint, alpha, 0f);
+                float f = n == 1 ? 0.5f : i / (float)(n - 1), height = Mathf.lerp(from, to, f);
+                record(Mathf.lerp(x, x2, f), Mathf.lerp(y, y2, f), stroke * 1.5f, tint, alpha, height < lowest ? 0f : height);
             }
         }else{
             super.line(x, y, x2, y2, stroke, tint, alpha);

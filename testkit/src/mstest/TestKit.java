@@ -30,6 +30,8 @@ import java.lang.reflect.*;
  *   fx=true        spawn glowing effects            zoom=N         camera zoom
  *   blocks=true    place buildings on open land     shore=true     place buildings on a shore with water to the south
  *   belt=true      add conveyors, sorters and two linked power nodes to those buildings
+ *   blockrow=a+b   those blocks in a row above the test buildings, two tiles apart; the camera moves there
+ *   sortrow=true   a row of conveyor, junction, sorter, inverted sorter, overflow gate, underflow gate, router, distributor above them; the camera moves there
  *   drill=true     add a mechanical drill on copper ore (its rotator turns)
  *   drillbelt=true add a conveyor along the south side of that drill with items held half under the drill (as when they come out of it)
  *   row=true       add six smelters side by side, touching (nothing may leak between them)
@@ -50,8 +52,10 @@ import java.lang.reflect.*;
  *   beam=true      a still glowing beam over the water (shore scene)
  *   laser=true     the continuous laser of the vela, held in place across the middle of the view
  *   crowd=a+b      one unit of each of those kinds held in a row just below the first test lamp; the camera moves there
- *   enemy=name     a unit of the other team held to the right of that row, so the row shoots at it (nothing held dies)
+ *   enemy=name     a unit of the other team held to the right of that row, so the row shoots at it (nothing held dies); enemyright=N: that far right of the lamp (before enemy=; 0 = under the middle of the row)
+ *   heldshot=F     a shot of the first unit of that row held at the first test lamp, with the share F of its time used up (0 = just fired .. 1)
  *   flash=true     a still muzzle flash next to the spawned unit
+ *   boom=true      the explosion effect of a thorium reactor next to the first test lamp (after blocks=true); nothing is destroyed
  *   many=N         N weak lights of equal strength over the view (a busy base)
  *   illuminator=true  a real Illuminator block with power (blocks scene)   tick=N  set the game clock
  *   flicker=true   report how much 8 frames in a row differ
@@ -85,6 +89,11 @@ public class TestKit extends Mod{
     final FloatSeq crowdAt = new FloatSeq();
     /** How far below the lamp the row is, world units (crowdbelow=N, before crowd=). */
     float crowdBelow = 34f;
+    /** How far to the right of the lamp the unit of the other team is held, world units (enemyright=N, before enemy=). */
+    float enemyRight = 64f;
+    /** heldshot=F: a shot of the first unit of the row, held at the first test lamp with that share of its time used up (0..1); below 0 = none. */
+    float heldShot = -1f;
+    mindustry.gen.Bullet shotHeld;
     int many;
     float[] beamPos;
     byte[] lastFrame;
@@ -283,6 +292,10 @@ public class TestKit extends Mod{
                 case "beam" -> beam = Boolean.parseBoolean(v);
                 case "laser" -> laser = Boolean.parseBoolean(v);
                 case "flash" -> flash = Boolean.parseBoolean(v);
+                case "boom" -> {
+                    // boom=true: the explosion of a thorium reactor (the effect alone, nothing is destroyed), four tiles right of the first test lamp
+                    if(lampPos != null && Boolean.parseBoolean(v)) Fx.reactorExplosion.at(lampPos[0] + 32f, lampPos[1]);
+                }
                 case "many" -> many = Integer.parseInt(v);
                 case "illuminator" -> placeIlluminator();
                 case "lampcolor" -> {
@@ -301,6 +314,8 @@ public class TestKit extends Mod{
                 case "blocks" -> placeBlocks();
                 case "shore" -> placeShore();
                 case "belt" -> placeBelt();
+                case "sortrow" -> placeSortRow();
+                case "blockrow" -> placeBlockRow(v);
                 case "drill" -> placeDrill();
                 case "drillbelt" -> placeDrillBelt();
                 case "row" -> placeRow();
@@ -341,12 +356,14 @@ public class TestKit extends Mod{
                     if(hoverPos != null && hoverType != null) lastUnit = hoverType.spawn(Vars.player.team(), hoverPos[0], hoverPos[1]);
                 }
                 case "crowdbelow" -> crowdBelow = Float.parseFloat(v);
+                case "enemyright" -> enemyRight = Float.parseFloat(v);
                 case "crowd" -> spawnCrowd(v);
+                case "heldshot" -> heldShot = Float.parseFloat(v);
                 case "enemy" -> {
                     // enemy=name: a unit of the other team held to the right of the row, for the row to shoot at; nothing in the row dies
                     var foe = Vars.content.unit(v);
                     if(foe != null && lampPos != null){
-                        float ex = lampPos[0] + 64f, ey = lampPos[1] - crowdBelow;
+                        float ex = lampPos[0] + enemyRight, ey = lampPos[1] - crowdBelow;
                         crowd.add(foe.spawn(Team.crux, ex, ey));
                         crowdAt.add(ex, ey);
                     }
@@ -544,6 +561,59 @@ public class TestKit extends Mod{
             link(x + 10, y, x + 15, y);
         }
         line("  placed conveyors, sorters and two linked power nodes");
+    }
+
+    /**
+     * blockrow=a+b+c: those blocks in a row, two tiles between them, nine tiles above the test buildings (after
+     * blocks=true) - any blocks side by side, to compare their shadows. The camera moves to the middle of the row.
+     */
+    void placeBlockRow(String names){
+        if(baseW == 0 || baseShore) return;
+        var team = Vars.player.team();
+        int x = baseX, placed = 0;
+        for(String name : names.split("[+]")){
+            var block = Vars.content.block(name);
+            if(block == null){
+                line("  no such block: " + name);
+                continue;
+            }
+            int size = block.size;
+            for(int dx = -2; dx < size + 2; dx++){
+                for(int dy = -3; dy < size + 3; dy++){
+                    var t = Vars.world.tile(x + dx, baseY + 9 + dy);
+                    if(t != null && t.build == null && t.block() != Blocks.air) t.setAir();
+                }
+            }
+            // setBlock takes the tile the block is centred on
+            var t = Vars.world.tile(x - block.sizeOffset, baseY + 9 - block.sizeOffset);
+            if(t != null && t.build == null) t.setBlock(block, team, 0);
+            x += size + 2;
+            placed++;
+        }
+        camX = (baseX + (x - baseX - 2) / 2f - 0.5f) * Vars.tilesize;
+        camY = (baseY + 10) * Vars.tilesize;
+        line("  placed a row of " + placed + " blocks: " + names);
+    }
+
+    /**
+     * sortrow=true: a row with one of each box a conveyor line runs through, a tile apart, eight tiles above the test
+     * buildings (after blocks=true): conveyor, junction, sorter, inverted sorter, overflow gate, underflow gate, router,
+     * distributor - to compare how long their shadows are. The camera moves there.
+     */
+    void placeSortRow(){
+        if(baseW == 0 || baseShore) return;
+        var team = Vars.player.team();
+        mindustry.world.Block[] row = {Blocks.conveyor, Blocks.junction, Blocks.sorter, Blocks.invertedSorter, Blocks.overflowGate, Blocks.underflowGate, Blocks.router, Blocks.distributor};
+        for(int dx = -1; dx < row.length * 2 + 2; dx++){
+            for(int dy = -2; dy <= 2; dy++){
+                var t = Vars.world.tile(baseX + dx, baseY + 9 + dy);
+                if(t != null && t.build == null && t.block() != Blocks.air) t.setAir();
+            }
+        }
+        for(int i = 0; i < row.length; i++) put(baseX + i * 2, baseY + 9, row[i], team);
+        camX = (baseX + row.length - 0.5f) * Vars.tilesize;
+        camY = (baseY + 9) * Vars.tilesize;
+        line("  placed a row: conveyor, junction, sorter, inverted sorter, overflow gate, underflow gate, router, distributor");
     }
 
     /**
@@ -899,6 +969,16 @@ public class TestKit extends Mod{
                 laserShot = UnitTypes.vela.weapons.first().bullet.create(Vars.player.unit(), Vars.player.team(), camX - 70f, camY - 30f, 25f);
             }
             if(laserShot != null && laserShot.time > 40f) laserShot.time = 40f;
+        }
+        if(heldShot >= 0f && crowd.size > 0 && lampPos != null && crowd.first().type.weapons.size > 0){
+            // heldshot=F: what a shot of that unit lights on its way, next to the test buildings and away from the unit's own glow
+            if(shotHeld == null || !shotHeld.isAdded()){
+                shotHeld = crowd.first().type.weapons.first().bullet.create(crowd.first(), crowd.first().team, lampPos[0], lampPos[1], 0f);
+            }
+            if(shotHeld != null){
+                shotHeld.set(lampPos[0], lampPos[1]);
+                shotHeld.time = Math.min(heldShot, 0.98f) * shotHeld.lifetime;
+            }
         }
         if(beam && beamPos != null){
             // a still, glowing, see-through beam over the water (additive, in the bloom layers), like a laser shot frozen in place

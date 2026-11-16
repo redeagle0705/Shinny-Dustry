@@ -38,6 +38,34 @@ uniform vec2 u_sun;       // direction towards the sun on the ground, length 1 (
 const float MAX_HEIGHT = 3.0;              // Heights.max
 const int MAX_TILES = 48;                  // tiles walked at most (about 17 tiles of shadow along this direction)
 
+// Blocks that are not drawn as full squares - round or cut corners, dents, a picture smaller than its tiles.
+// u_shapes (Occluders.java): one texel per tile, unfiltered. red, green = where the block's outline is in u_outlines
+// (its slot, in tiles), blue = which tile of its block this is (x * 16 + y, from the lower left), alpha = size * 15 / 255.
+// Alpha 0: a plain square, or no block.
+// u_outlines (Silhouettes.java): the outlines, 16 texels per tile. green = how much the block covers there, blue = the
+// same blurred, red = how far from there towards the sun the block begins (1.0 = never, else 255 / FAR tiles).
+uniform sampler2D u_shapes;
+uniform sampler2D u_outlines;
+uniform float u_shaped;       // 1 when both are bound
+const float CELLS = 64.0;     // u_outlines is this many tiles wide (Silhouettes.cells)
+const float FAR = 24.0;       // Silhouettes.unit
+
+// What u_outlines says at the point q of a block (in tiles from the block's lower left corner).
+vec4 outlineAt(vec2 slot, float size, vec2 q){
+    return texture2D(u_outlines, (slot + clamp(q, 0.04, size - 0.04)) / CELLS);
+}
+
+// How far from the point q, going along "light", the block begins, in tiles; 100 = it never does.
+// Read where the line enters the block's tiles: from there on, the answer was worked out beforehand (red).
+float toOutline(vec2 slot, float size, vec2 q, vec2 light){
+    vec2 t1 = -q / light, t2 = (size - q) / light;
+    vec2 lo = min(t1, t2), hi = max(t1, t2);
+    float enter = max(max(lo.x, lo.y), 0.0);
+    if(enter > min(hi.x, hi.y)) return 100.0;
+    float far = outlineAt(slot, size, q + light * enter).r;
+    return far > 0.98 ? 100.0 : enter + far * 255.0 / FAR;
+}
+
 // 1 when a block whose shadow reaches at least t tiles stands on that tile (boulders are round and join nothing).
 float casts(vec2 cell, float t){
     vec2 uv = (cell + 0.5) * u_tile;
@@ -83,6 +111,7 @@ void main(){
         if(dark > 0.05){
             vec4 block = u_tall > 0.5 ? texture2D(u_heights, uv) : vec4(0.0, 0.0, 1.0 / MAX_HEIGHT, 1.0);
             float reach = block.b * MAX_HEIGHT * u_length;
+            vec4 shape = u_shaped > 0.5 ? texture2D(u_shapes, uv) * 255.0 : vec4(0.0);
             if(block.a < 0.75){
                 // A boulder (alpha 128): round, and smaller than its tile. Its shadow is a circle pushed along the
                 // light direction - everything closer than the circle's radius to the line from the boulder's centre
@@ -93,6 +122,18 @@ void main(){
                 float edge = clamp(max(u_pixel * 1.5, u_soft * 0.16 + 0.04), 0.001, 0.30);
                 float rel = along / max(reach, 0.001);
                 shade = max(shade, min(dark, 1.0) * smoothstep(0.0, edge, inside) * (1.0 - 0.45 * rel * rel));
+            }else if(shape.a > 7.0){
+                // A block that is not drawn as a full square: the shadow of its outline, not of the tiles it stands on.
+                // (Every tile of the block gives the same answer.)
+                float size = floor(shape.a / 15.0 + 0.5), where = floor(shape.b + 0.5);
+                vec2 corner = cell - vec2(floor(where / 16.0), mod(where, 16.0));   // the block's lower left corner
+                float edge = clamp(max(u_pixel * 1.5, u_soft * (0.16 + 0.10 * t) + 0.012 * t), 0.001, 0.33);
+                float tip = mix(0.04, 0.30, u_soft), cover = 0.0;
+                for(int k = 0; k < 2; k++){
+                    float far = toOutline(shape.rg, size, p - corner + across * edge * (k == 0 ? 0.35 : -0.35), light);
+                    if(far < reach) cover += 0.5 * (1.0 - smoothstep(1.0 - tip, 1.0, far / reach)) * (1.0 - 0.45 * far * far / (reach * reach));
+                }
+                shade = max(shade, min(dark, 1.0) * cover);
             }else if(t < reach){
                 float rel = t / max(reach, 0.001);    // 0 at the block, 1 at the tip of its shadow
                 // how far inside the side edge of this tile's shadow the point lies, in tiles
@@ -126,6 +167,23 @@ void main(){
     // contact shade: the soft dark rim the built-in shadow has all around a block, kept faintly so blocks still sit on
     // the ground on their lit sides (the blurred mask, read where the point is)
     float rim = (1.0 - texture2D(u_texture, v_texCoords).r) / 0.71;
+    if(u_shaped > 0.5 && rim > 0.01){
+        // Around a block that is not drawn as a full square the rim follows what is drawn (the rim of the square
+        // showed as a darker square around every power node). The block is the one on this tile, or else on the
+        // nearest tile beside it.
+        vec2 f = fract(p), side = vec2(f.x > 0.5 ? 1.0 : -1.0, f.y > 0.5 ? 1.0 : -1.0);
+        for(int i = 0; i < 4; i++){
+            cell = floor(p) + (i == 1 ? vec2(side.x, 0.0) : i == 2 ? vec2(0.0, side.y) : i == 3 ? side : vec2(0.0));
+            vec4 shape = texture2D(u_shapes, (cell + 0.5) * u_tile) * 255.0;
+            if(shape.a > 7.0){
+                float size = floor(shape.a / 15.0 + 0.5), where = floor(shape.b + 0.5);
+                vec2 corner = cell - vec2(floor(where / 16.0), mod(where, 16.0));   // the block's lower left corner
+                // the blurred outline is one half at a straight edge of the block, less where the block is not
+                rim *= clamp(outlineAt(shape.rg, size, p - corner).b * 2.0, 0.0, 1.0);
+                break;
+            }
+        }
+    }
     shade = max(shade, clamp(rim, 0.0, 1.0) * 0.30);
 
     // Where the mirror image of a building lies on water or ice, the shadow is laid on more lightly, so the image can

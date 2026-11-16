@@ -170,6 +170,16 @@ public class Scene{
         return ready() ? occluders.texture() : null;
     }
 
+    /** Which blocks are not drawn as full squares, and where their outline is kept (Occluders.java), one texel per tile; null without a loaded map. */
+    public Texture shapes(){
+        return ready() ? occluders.shapes() : null;
+    }
+
+    /** The outlines of those blocks (Silhouettes.java); null while there are none. */
+    public Texture outlines(){
+        return ready() ? occluders.outlines() : null;
+    }
+
     /** @return the objects buffer of the previous frame for the water shader, or null if there is none */
     public Texture reflection(){
         return objects != null && Core.graphics.getFrameId() - objectsFrame <= 1 ? objects.getTexture() : null;
@@ -932,6 +942,15 @@ public class Scene{
             mask.bind(3);
             set(s, "u_mask", 3);
         }
+        // blocks that are not drawn as full squares: no glint on the ground in the corners they leave empty
+        Texture shapes = glintReady ? occluders.shapes() : null, outlines = shapes == null ? null : occluders.outlines();
+        if(outlines != null){
+            shapes.bind(5);
+            outlines.bind(6);
+        }
+        set(s, "u_shapes", 5);
+        set(s, "u_outlines", 6);
+        set(s, "u_shaped", outlines != null ? 1f : 0f);
         // blocks with a normal map: their shading was laid on in the middle of the frame (shapePass); here the map only
         // tells the glint which way a face points
         boolean shapedGlint = glintReady && shapeReady;

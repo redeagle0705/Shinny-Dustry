@@ -8,6 +8,7 @@ import mindustry.content.*;
 import mindustry.world.*;
 import mindustry.world.blocks.defense.*;
 import mindustry.world.blocks.defense.turrets.*;
+import mindustry.world.blocks.distribution.*;
 import mindustry.world.blocks.storage.*;
 
 /**
@@ -64,8 +65,14 @@ public class Heights{
         if(block.isStatic()) return 1.5f;
         // boulders and other scenery that units walk over
         if(!block.hasBuilding()) return 0.3f;
-        // conveyors, conduits, junctions, sorters, bridges: they lie on the ground
-        if(!solid) return 0.15f;
+        if(!solid){
+            // the boxes a conveyor line runs through stand a little above it: routers, sorters and inverted sorters,
+            // overflow and underflow gates, junctions; the distributor (a router of four tiles) a little higher still
+            if(block instanceof Router) return size > 1 ? 0.4f : 0.3f;
+            if(block instanceof Sorter || block instanceof OverflowGate || block instanceof Junction) return 0.3f;
+            // conveyors, conduits, bridges: they lie on the ground
+            return 0.15f;
+        }
         if(block instanceof CoreBlock) return 1.5f + 0.4f * (size - 3);
         if(block instanceof Wall) return 1f + 0.25f * (size - 1);
         if(block instanceof BaseTurret) return 1.1f + 0.3f * (size - 1);

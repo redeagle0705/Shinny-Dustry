@@ -18,6 +18,8 @@ public class ShaderMod extends Mod{
     reflectOn = "mshaders-reflect", reflectStrength = "mshaders-reflect-strength",
     shadowOn = "mshaders-shadow", shadowLength = "mshaders-shadow-length", shadowStrength = "mshaders-shadow-strength", shadowCycle = "mshaders-shadow-cycle", shadowQuality = "mshaders-shadow-quality", sunAngle = "mshaders-sun-angle",
     lightsOn = "mshaders-lights", lightsStrength = "mshaders-lights-strength", darkDepth = "mshaders-dark-depth", lightsColor = "mshaders-lights-color", lightsMoving = "mshaders-lights-moving", lightsMax = "mshaders-lights-max", lightsAir = "mshaders-lights-air", lightsGround = "mshaders-lights-ground", lightsUnits = "mshaders-lights-units", lightsUnitsDepth = "mshaders-lights-units-depth",
+    // found, not listed: the slider appears once a thorium reactor has blown up in view (LightTap.reactorBoost)
+    reactorFun = "mshaders-reactor-fun", reactorFound = "mshaders-reactor-found",
     glintOn = "mshaders-glint", glintStrength = "mshaders-glint-strength", glintBand = "mshaders-glint-band",
     normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsHeight = "mshaders-normals-height",
     postOn = "mshaders-post", vignette = "mshaders-vignette", saturation = "mshaders-saturation", contrast = "mshaders-contrast", warmth = "mshaders-warmth";
@@ -56,50 +58,81 @@ public class ShaderMod extends Mod{
         ice.init(scene);
         floors.init();
 
+        // The settings are folded under the headline of their section (Folds.java): the switch of each effect, then its sliders.
         Vars.ui.settings.addCategory(Core.bundle.get("mshaders.category", "Shaders"), Icon.effect, t -> {
-            t.checkPref(waterOn, true);
-            t.sliderPref(waterWave, 100, 0, 200, 5, i -> i + "%");
-            t.sliderPref(waterSparkle, 100, 0, 200, 5, i -> i + "%");
-            t.sliderPref(waterFoam, 100, 0, 200, 5, i -> i + "%");
-            t.checkPref(iceOn, true);
-            t.sliderPref(iceStrength, 100, 0, 200, 5, i -> i + "%");
-            t.checkPref(floorsOn, true);
+            Folds f = new Folds(t);
+            String off = Core.bundle.get("mshaders.off", "off");
+
+            f.section("water");
+            f.check(waterOn, true);
+            f.slider(waterWave, 100, 0, 200, 5, i -> i + "%");
+            f.slider(waterSparkle, 100, 0, 200, 5, i -> i + "%");
+            f.slider(waterFoam, 100, 0, 200, 5, i -> i + "%");
+            f.check(iceOn, true);
+            f.slider(iceStrength, 100, 0, 200, 5, i -> i + "%");
+            f.check(reflectOn, true);
+            f.slider(reflectStrength, 100, 0, 200, 5, i -> i + "%");
+
+            f.section("ground");
+            f.check(floorsOn, true);
             for(String key : new String[]{floorRock, floorSand, floorSnow, floorGrass, floorHot, floorMetal, floorRelief}){
-                t.sliderPref(key, 100, 0, 200, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
+                f.slider(key, 100, 0, 200, 5, i -> i == 0 ? off : i + "%");
             }
-            t.checkPref(reflectOn, true);
-            t.sliderPref(reflectStrength, 100, 0, 200, 5, i -> i + "%");
-            t.checkPref(shadowOn, true);
-            t.sliderPref(shadowLength, 15, 0, 40, 1, i -> Strings.autoFixed(i / 10f, 1));
-            t.sliderPref(shadowStrength, 70, 0, 100, 5, i -> i + "%");
-            t.sliderPref(shadowQuality, 80, 0, 100, 5, i -> i + "%");
-            t.sliderPref(sunAngle, 45, 0, 355, 5, i -> i + "°");
-            t.sliderPref(shadowCycle, 4, 0, 30, 1, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : Core.bundle.format("mshaders.minutes", i));
-            t.checkPref(lightsOn, true);
-            t.checkPref(lightsUnits, true);
-            t.sliderPref(lightsUnitsDepth, 65, 10, 100, 5, i -> i + "%");
-            t.sliderPref(lightsStrength, 100, 0, 200, 5, i -> i + "%");
-            t.sliderPref(darkDepth, 50, 0, 100, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
-            t.sliderPref(lightsColor, 100, 0, 200, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
-            t.sliderPref(lightsMoving, 100, 100, 500, 25, i -> i + "%");
-            t.sliderPref(lightsMax, 64, 16, Scene.maxLights, 16, i -> i + "");
-            t.sliderPref(lightsAir, 100, 0, 300, 25, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
-            t.sliderPref(lightsGround, 100, 0, 300, 25, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
-            t.checkPref(glintOn, true);
-            t.sliderPref(glintStrength, 100, 0, 200, 5, i -> i + "%");
-            t.sliderPref(glintBand, 100, 0, 200, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
-            t.checkPref(normalsOn, true);
-            t.sliderPref(normalsStrength, 100, 0, 200, 5, i -> i + "%");
-            t.checkPref(normalsHeight, true);
-            t.checkPref(postOn, true);
-            t.sliderPref(vignette, 35, 0, 100, 5, i -> i + "%");
-            t.sliderPref(saturation, 115, 0, 200, 5, i -> i + "%");
-            t.sliderPref(contrast, 108, 50, 150, 2, i -> i + "%");
-            t.sliderPref(warmth, 15, -100, 100, 5, i -> (i > 0 ? "+" : "") + i);
+
+            f.section("shadow");
+            f.check(shadowOn, true);
+            f.slider(shadowLength, 15, 0, 40, 1, i -> Strings.autoFixed(i / 10f, 1));
+            f.slider(shadowStrength, 70, 0, 100, 5, i -> i + "%");
+            f.slider(shadowQuality, 80, 0, 100, 5, i -> i + "%");
+            f.slider(sunAngle, 45, 0, 355, 5, i -> i + "°");
+            f.slider(shadowCycle, 4, 0, 30, 1, i -> i == 0 ? off : Core.bundle.format("mshaders.minutes", i));
+
+            f.section("lights");
+            f.check(lightsOn, true);
+            f.check(lightsUnits, true);
+            f.slider(lightsUnitsDepth, 65, 10, 100, 5, i -> i + "%");
+            f.slider(lightsStrength, 100, 0, 200, 5, i -> i + "%");
+            f.slider(darkDepth, 50, 0, 100, 5, i -> i == 0 ? off : i + "%");
+            f.slider(lightsColor, 100, 0, 200, 5, i -> i == 0 ? off : i + "%");
+            f.slider(lightsMoving, 100, 100, 500, 25, i -> i + "%");
+            f.slider(lightsMax, 64, 16, Scene.maxLights, 16, i -> i + "");
+            f.slider(lightsAir, 100, 0, 300, 25, i -> i == 0 ? off : i + "%");
+            f.slider(lightsGround, 100, 0, 300, 25, i -> i == 0 ? off : i + "%");
+            f.secret(reactorFound, reactorFun, 10, 1, 50, 1, i -> "x" + i);
+            folds = f;
+
+            f.section("blocks");
+            f.check(glintOn, true);
+            f.slider(glintStrength, 100, 0, 200, 5, i -> i + "%");
+            f.slider(glintBand, 100, 0, 200, 5, i -> i == 0 ? off : i + "%");
+            f.check(normalsOn, true);
+            f.slider(normalsStrength, 100, 0, 200, 5, i -> i + "%");
+            f.check(normalsHeight, true);
+
+            f.section("post");
+            f.check(postOn, true);
+            f.slider(vignette, 35, 0, 100, 5, i -> i + "%");
+            f.slider(saturation, 115, 0, 200, 5, i -> i + "%");
+            f.slider(contrast, 108, 50, 150, 2, i -> i + "%");
+            f.slider(warmth, 15, -100, 100, 5, i -> (i > 0 ? "+" : "") + i);
         });
 
         Log.info("[mshaders] water shader: @, ice shader: @, ground shaders: @, screen effects: @, light listener: @, directional shadows: @",
             state(water.ready()), state(ice.ready()), state(floors.ready()), state(scene.ready()), state(scene.lightsReady()), state(shadow.ready()));
+    }
+
+    private static Folds folds;
+
+    /**
+     * A thorium reactor has blown up in view for the first time: from now on the settings show "ReactorFUNvalue" under
+     * Lights. Called while the frame is being drawn, so what touches the UI waits until the frame is done.
+     */
+    static void foundReactor(){
+        Core.settings.put(reactorFound, true);
+        Core.app.post(() -> {
+            if(folds != null) folds.rebuild();
+            Vars.ui.hudfrag.showToast(Icon.effect, Core.bundle.get("mshaders.reactorfound", "ReactorFUNvalue unlocked"));
+        });
     }
 
     private static String state(boolean ready){

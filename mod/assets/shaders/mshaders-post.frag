@@ -20,6 +20,13 @@ uniform float u_band;          // strength of the drifting sun band, 0 = no band
 uniform sampler2D u_surface;   // the normals drawn for this frame (Surfaces.draw); alpha = 1 where a normal-mapped building is
 uniform float u_shape;         // 1 when u_surface is bound
 
+// Blocks that are not drawn as full squares (as in mshaders-shadow.frag). u_shapes, one texel per tile, unfiltered:
+// red, green = the block's slot in u_outlines, blue = which tile of its block this is (x * 16 + y), alpha = size * 15 / 255,
+// 0 = a plain square or no block. u_outlines, 16 texels per tile: green = how much the block covers there.
+uniform sampler2D u_shapes;
+uniform sampler2D u_outlines;
+uniform float u_shaped;        // 1 when both are bound
+
 uniform float u_vignette;      // 0 = none, 1 = corners fully dark
 uniform float u_saturation;    // 1 = unchanged
 uniform float u_contrast;      // 1 = unchanged
@@ -51,6 +58,17 @@ void main(){
 
     if(u_glint > 0.001 && !shaped){
         float block = smoothstep(0.55, 0.90, (1.0 - texture2D(u_mask, (world + 4.0) / u_world).r) / 0.71);
+        if(block > 0.01 && u_shaped > 0.5){
+            // Where such a block leaves its tiles empty the ground shows, and the ground gets no glint.
+            // (It did: a paler square around every power node.)
+            vec2 at = (world + 4.0) / 8.0, cell = floor(at);   // in tiles; tile n covers n .. n + 1
+            vec4 shape = texture2D(u_shapes, (cell + 0.5) * 8.0 / u_world) * 255.0;
+            if(shape.a > 7.0){
+                float size = floor(shape.a / 15.0 + 0.5), where = floor(shape.b + 0.5);
+                vec2 corner = cell - vec2(floor(where / 16.0), mod(where, 16.0));
+                block *= smoothstep(0.35, 0.65, texture2D(u_outlines, (shape.rg + clamp(at - corner, 0.04, size - 0.04)) / 64.0).g);
+            }
+        }
         if(block > 0.01){
             // Block sprites use three tones per material: light = faces turned to the upper right (and raised tops),
             // mid = flat, dark = faces turned away. Brightness minus the brightness around it therefore says which way

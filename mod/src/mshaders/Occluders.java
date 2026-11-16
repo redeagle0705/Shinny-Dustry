@@ -26,6 +26,15 @@ public class Occluders{
 
     private Pixmap pixmap;
     private Texture texture;
+    /**
+     * A second picture, for blocks that are not drawn as full squares: red, green = where the block's outline is in
+     * the picture of outlines (Silhouettes.java; x and y of its slot, in tiles), blue = which tile of its block this
+     * is (x * 16 + y, from the block's lower left), alpha = the block's size * 15. All 0 on a tile whose block is a
+     * plain square, or that has none. Read unfiltered.
+     */
+    private final Silhouettes silhouettes = new Silhouettes();
+    private Pixmap shapePixmap;
+    private Texture shapeTexture;
     private boolean dirty;
     /** Tiles holding a block that is only sometimes in the way (doors). The game sends no event when one opens or shuts, so these are looked at once a frame. */
     private final IntSeq doors = new IntSeq();
@@ -34,6 +43,10 @@ public class Occluders{
     public void init(){
         Events.on(WorldLoadEvent.class, e -> rebuild());
         Events.on(TileChangeEvent.class, e -> changed(e.tile));
+        // a block that is drawn turned with its building has another outline now
+        Events.on(BuildRotateEvent.class, e -> {
+            if(e.build != null) changed(e.build.tile);
+        });
     }
 
     private static int value(Tile tile){
@@ -51,23 +64,41 @@ public class Occluders{
         return (tile.build != null ? building : wall) | height;
     }
 
+    /** What the second picture says about that tile (see shapePixmap). */
+    private int shape(Tile tile){
+        Block block = tile.block();
+        // only what stands: the low things units walk over (conveyors, ducts) cast next to no shadow anyway
+        if(block == Blocks.air || tile.build == null || tile.build.tile == null || !block.solid || block.size > 16) return 0;
+        int slot = silhouettes.slot(block, block.rotate && block.rotateDraw ? tile.build.rotation : 0);
+        if(slot < 0) return 0;
+        int ox = tile.x - (tile.build.tile.x + block.sizeOffset), oy = tile.y - (tile.build.tile.y + block.sizeOffset);
+        if(ox < 0 || oy < 0 || ox >= block.size || oy >= block.size) return 0;
+        return (slot & 0xff) << 24 | (slot >> 8 & 0xff) << 16 | (ox * 16 + oy) << 8 | block.size * 15;
+    }
+
     private void rebuild(){
         int w = Vars.world.width(), h = Vars.world.height();
         if(texture != null) texture.dispose();
         if(pixmap != null) pixmap.dispose();
-        texture = null;
-        pixmap = null;
+        if(shapeTexture != null) shapeTexture.dispose();
+        if(shapePixmap != null) shapePixmap.dispose();
+        texture = shapeTexture = null;
+        pixmap = shapePixmap = null;
         if(w <= 0 || h <= 0) return;
 
         pixmap = new Pixmap(w, h);
+        shapePixmap = new Pixmap(w, h);
         doors.clear();
         for(Tile tile : Vars.world.tiles){
             // row 0 of the pixmap is v = 0 of the texture, so tile y needs no flipping
             pixmap.set(tile.x, tile.y, value(tile));
+            shapePixmap.set(tile.x, tile.y, shape(tile));
             if(tile.block().solidifes) doors.add(tile.pos());
         }
         texture = new Texture(pixmap);
         texture.setFilter(TextureFilter.linear, TextureFilter.linear);
+        shapeTexture = new Texture(shapePixmap);
+        shapeTexture.setFilter(TextureFilter.nearest, TextureFilter.nearest);
         dirty = false;
     }
 
@@ -90,6 +121,7 @@ public class Occluders{
     private void write(Tile tile){
         if(tile.x < 0 || tile.y < 0 || tile.x >= pixmap.width || tile.y >= pixmap.height) return;
         pixmap.set(tile.x, tile.y, value(tile));
+        shapePixmap.set(tile.x, tile.y, shape(tile));
         // keep the list of doors up to date
         int pos = tile.pos();
         boolean listed = doors.contains(pos);
@@ -117,8 +149,19 @@ public class Occluders{
         }
         if(dirty){
             texture.draw(pixmap);
+            shapeTexture.draw(shapePixmap);
             dirty = false;
         }
         return texture;
+    }
+
+    /** @return the picture of blocks that are not plain squares, brought up to date; null when there is no world */
+    public Texture shapes(){
+        return texture() == null ? null : shapeTexture;
+    }
+
+    /** @return the outlines those blocks have (Silhouettes.java), for where the sun is now; null while there are none */
+    public Texture outlines(){
+        return silhouettes.texture();
     }
 }

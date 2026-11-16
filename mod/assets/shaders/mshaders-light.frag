@@ -76,6 +76,27 @@ float joined(vec2 cell, vec2 toward){
     return j;
 }
 
+// Low blocks - what units walk over: conveyors, sorters, routers, the distributor - are not in the way of a lamp the way
+// a wall is, and used to be no obstacle at all. A light on the ground is now taken to hang LAMP_UP tiles up: the line
+// from a point on the ground to it climbs, and a low block is in the way only where that line is still below the
+// block's top - a short shadow behind the block, longer the further from the lamp and the taller the block (so the
+// distributor's is a little longer than a router's, and a conveyor's is the shortest).
+const float LAMP_UP = 2.0;
+
+// 1 when whatever stands on that tile is at least "need" tiles tall.
+float tallEnough(vec2 cell, float need){
+    return step(need, tallOn(cell));
+}
+
+// The same as joined(), for low blocks: no light gets through between two that touch and are both tall enough.
+float joinedLow(vec2 cell, vec2 toward, float need){
+    float j = 0.0;
+    if(abs(toward.x) > 0.3) j = max(j, tallEnough(cell + vec2(sign(toward.x), 0.0), need));
+    if(abs(toward.y) > 0.3) j = max(j, tallEnough(cell + vec2(0.0, sign(toward.y)), need));
+    if(abs(toward.x) > 0.3 && abs(toward.y) > 0.3) j = max(j, tallEnough(cell + sign(toward), need));
+    return j;
+}
+
 // How much of a light at "to" reaches the point "from" (world units): 1 = all of it, 0 = none.
 // The line between them is walked tile by tile - every tile it crosses, once, in order - so no block is stepped over
 // however far away the light is. (Before, the line was read at 20 evenly spaced points: far from a lamp those points
@@ -125,8 +146,14 @@ float reach(vec2 from, vec2 to, float lamp){
     // "through": light left after the runs of blocks already walked past; "run": after the run the walk is in now
     float t = 0.0, through = 1.0, run = 1.0, runStart = 0.0;
     bool inRun = false;
+    // low blocks in the way of a light on the ground (see LAMP_UP): "base" is how high the point itself is - on the
+    // ground, or on top of the block it lies on, which then is not in its own way, nor is any block no taller
+    bool lows = air <= 0.0 && u_own > 0.5;
+    float base = lows ? tallOn(cell) : 0.0, low = 1.0;
+    float climb = max(LAMP_UP - base, 0.05) / len;   // how much the line to the light rises per tile
     for(int i = 0; i < MAX_TILES; i++){
-        if(blockOn(cell) > 0.5){
+        vec4 here = texture2D(u_texture, (cell + 0.5) * 8.0 / u_world);
+        if((u_own > 0.5 ? here.r : clamp((1.0 - here.r) / 0.71, 0.0, 1.0)) > 0.5){
             if(!inRun){
                 inRun = true;
                 run = 1.0;
@@ -153,6 +180,15 @@ float reach(vec2 from, vec2 to, float lamp){
                 through *= run;
                 if(through < 0.01) return 0.0;
             }
+            // a low block: in the way up to "far" tiles from the point, where the line to the light passes its top
+            float far = lows ? (here.b * TALLEST - base) / climb : 0.0;
+            if(t < far){
+                float lateral = dot(p - (cell + 0.5), across);
+                float side = smoothstep(0.0, clamp(0.10 + 0.04 * t, 0.10, 0.45), halfWidth - abs(lateral));
+                if(side < 0.999) side = max(side, joinedLow(cell, across * (lateral < 0.0 ? -1.0 : 1.0), base + climb * t));
+                low *= 1.0 - side * (1.0 - smoothstep(far * 0.6, far, t));
+                if(low < 0.01) return 0.0;
+            }
         }
         if(next.x < next.y){
             t = next.x;
@@ -170,7 +206,7 @@ float reach(vec2 from, vec2 to, float lamp){
     // The walk ended inside a run of blocks. If that is a core with what touches it, the light passes; otherwise the
     // run counts like any other.
     if(inRun && !(lampInside && len - runStart < attached)) through *= run;
-    return through;
+    return through * low;
 }
 
 // How much of a light gets past the units between it and a point: 1 = all of it.

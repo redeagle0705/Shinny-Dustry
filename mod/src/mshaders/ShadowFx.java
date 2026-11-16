@@ -38,6 +38,17 @@ public class ShadowFx{
         // the sun shadow keeps the share  daylight / (daylight + lamp light): the weaker the daylight, the sooner a lamp wins
         if(s.hasUniform("u_fillK")) s.setUniformf("u_fillK", 5f * ShaderMod.percent(ShaderMod.lightsStrength, 100) / ShaderMod.daylight());
     }
+    /** Binds the picture of blocks that are not plain squares to texture unit 4 and their outlines to unit 5 (mshaders-shadow.frag, toOutline). */
+    private void applyShapes(Shader s){
+        Texture shapes = scene == null ? null : scene.shapes(), outlines = shapes == null ? null : scene.outlines();
+        if(outlines != null){
+            shapes.bind(4);
+            outlines.bind(5);
+        }
+        if(s.hasUniform("u_shapes")) s.setUniformi("u_shapes", 4);
+        if(s.hasUniform("u_outlines")) s.setUniformi("u_outlines", 5);
+        if(s.hasUniform("u_shaped")) s.setUniformf("u_shaped", outlines != null ? 1f : 0f);
+    }
     private final Runnable swapOut = () -> {
         if(Shaders.darkness == directional) Shaders.darkness = original;
         // BlockRenderer.drawShadows() has just run: its mask is still in Tmp.tr1 (BlockRenderer.java:513). Kept for the
@@ -99,6 +110,7 @@ public class ShadowFx{
                     if(hasUniform("u_pixel")) setUniformf("u_pixel", Core.camera.width / Math.max(Core.graphics.getWidth(), 1) / Vars.tilesize);
                     if(hasUniform("u_sun")) setUniformf("u_sun", ShaderMod.sunX(), ShaderMod.sunY());
                     applyFill(this);
+                    applyShapes(this);
                     // lighter on water and ice while they show mirror images (the image lies inside the shadow)
                     boolean mirrors = Core.settings.getBool(ShaderMod.reflectOn, true) && Vars.renderer.animateWater
                         && (Core.settings.getBool(ShaderMod.waterOn, true) || Core.settings.getBool(ShaderMod.iceOn, true));
@@ -138,6 +150,7 @@ public class ShadowFx{
                 @Override
                 public void apply(){
                     applyFill(this);
+                    applyShapes(this);
                     scene.heights().bind(1);
                     mask.bind(0);
                     if(hasUniform("u_heights")) setUniformi("u_heights", 1);
