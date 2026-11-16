@@ -37,6 +37,19 @@ const float WIDE = 2.8;     // mode 3: a light is "near" up to this many radii a
 
 const float TALLEST = 3.0;  // tiles: the tallest a block can be (Heights.max)
 
+// Units in the way of light (UnitShades.java): a picture of the view, half the size of the screen. Where something of
+// a unit is: r = (1 - its bottom / CEILING) * cover, g = (its top / CEILING) * cover, b = cover, a = (its width / WIDEST) * cover.
+uniform sampler2D u_unitMask;
+uniform float u_unitsOn;    // 1 when the picture is of this frame and not empty
+uniform float u_unitTop;    // the top of the tallest thing in it, world units
+uniform float u_unitDepth;  // how deep the shadow of a unit is: 1 = it takes all of the light away, less = part of it (the "depth" setting)
+const float CEILING = 96.0;     // world units (UnitShades.ceiling)
+const int UNIT_STEPS = 32;      // steps along the line to one light, at most
+const float UNIT_SOFT = 1.5;    // world units over which the bottom and the top of a unit fade
+const float WIDEST = 32.0;      // world units (UnitShades.widest): alpha of the picture = width of the thing / this
+const float LIGHT_SIZE = 5.0;   // world units: how large a light is taken to be - it smears the shadow of thin things
+const float UNIT_LAMP = 6.0;    // world units: how high a light on the ground is taken to be when units are in its way
+
 // How tall the block on that tile is, in tiles (Occluders.java keeps it in blue); one tile where only the game's mask is there.
 float tallOn(vec2 cell){
     return u_own > 0.5 ? texture2D(u_texture, (cell + 0.5) * 8.0 / u_world).b * TALLEST : 1.0;
@@ -157,11 +170,57 @@ float reach(vec2 from, vec2 to, float lamp){
     return through;
 }
 
+// How much of a light gets past the units between it and a point: 1 = all of it.
+// The line from the point to the light is a ray that climbs: "low" at the point (the ground, or the top of the unit the
+// point is on), "high" at the light. At each step: is the ray, at the height it has there, inside what the picture of
+// the units says stands there (from its bottom to its top)? So a body throws a shadow as long as it is tall against
+// the height of the light, the shadow of an arching leg lies apart from the leg, and light passes under what is
+// carried or flies. Only the stretch of the line on which the ray is still below the tallest unit is walked.
+// "clear": the radius of the unit the light itself sits on - that unit is not in the way of its own light.
+// "jitter": 0..1, different for every pixel, shifts the steps so that their spacing shows as grain (which the blur
+// after this pass smooths) rather than as bands.
+float unitsOpen(vec2 from, vec2 to, float len, float low, float high, float clear, float jitter){
+    if(len < 1.0 || high <= low) return 1.0;
+    float last = min((u_unitTop + UNIT_SOFT - low) / (high - low), 1.0 - clear / len);
+    if(last <= 0.0) return 1.0;
+    float steps = clamp(last * len / 2.5, 3.0, float(UNIT_STEPS));
+    float open = 1.0;
+    for(int i = 0; i < UNIT_STEPS; i++){
+        float k = float(i) + jitter;
+        if(k >= steps) break;
+        float t = last * k / steps;
+        vec2 uv = (from + (to - from) * t - u_campos) / u_resolution;
+        if(uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) continue;
+        vec4 m = texture2D(u_unitMask, uv);
+        if(m.b > 0.02){
+            float ray = low + (high - low) * t;
+            float bottom = (1.0 - m.r / m.b) * CEILING, top = m.g / m.b * CEILING;
+            float hit = smoothstep(bottom - UNIT_SOFT, bottom, ray) * (1.0 - smoothstep(top, top + UNIT_SOFT, ray));
+            // A light has a size, so the shadow of a thing is smeared the wider the further the point is behind it
+            // compared with how far the thing is from the light: by (size of the light) * t / (1 - t). A thing
+            // narrower than that smear takes only its share of the light away - the leg of a walker shades the ground
+            // right behind it, and a few tiles on its shadow has all but faded.
+            float smear = LIGHT_SIZE * t / max(1.0 - t, 0.02);
+            hit *= clamp(m.a / m.b * WIDEST / max(smear, 0.001), 0.0, 1.0);
+            open = min(open, 1.0 - m.b * hit);
+        }
+    }
+    return open;
+}
+
 void main(){
     vec2 world = v_texCoords * u_resolution + u_campos;
     vec3 sum = vec3(0.0);
     vec2 aim = vec2(0.0);
     float most = 0.0, total = 0.0;
+
+    // units in the way of light: where this point is on top of one, the ray starts from its top
+    float standing = 0.0, jitter = 0.0;
+    if(u_unitsOn > 0.5){
+        vec4 here = texture2D(u_unitMask, v_texCoords);
+        if(here.b > 0.2) standing = (here.g / here.b * CEILING + 2.0 * UNIT_SOFT) * smoothstep(0.2, 0.6, here.b);
+        jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    }
 
     for(int i = 0; i < MAX_LIGHTS; i++){
         if(i >= u_count) break;
@@ -182,7 +241,12 @@ void main(){
         float rad = u_mode == 3 ? l.z * WIDE : l.z;
         if(dist >= rad) continue;
 
-        float open = reach(world, l.xy, u_colors[i].a);
+        // below zero: the light sits on a unit of that radius (Scene.pickLights) - nothing to do with blocks
+        float code = u_colors[i].a;
+        float open = reach(world, l.xy, max(code, 0.0));
+        // A light that does not hang in the air is taken to sit low, UNIT_LAMP up: a unit on the ground then shades all
+        // the way behind it, and the light of a lamp a walker stands over gets out under its body, between its legs.
+        if(u_unitsOn > 0.5 && open > 0.01) open *= mix(1.0, unitsOpen(world, l.xy, along, standing, high > 0.0 ? high : UNIT_LAMP, code < 0.0 ? -code : 0.0, jitter), u_unitDepth);
         vec3 c = u_colors[i].rgb;
         if(u_mode == 3){
             // full inside the lit circle, fading out to WIDE radii; weak lights count less; behind a block it is

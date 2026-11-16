@@ -7,8 +7,10 @@ import arc.math.*;
 import arc.struct.*;
 import mindustry.*;
 import mindustry.core.*;
+import mindustry.entities.bullet.*;
 import mindustry.gen.*;
 import mindustry.graphics.*;
+import mindustry.world.*;
 
 import java.lang.reflect.*;
 
@@ -29,6 +31,16 @@ public class LightTap extends LightRenderer{
     public static final int stride = 8;
 
     public final FloatSeq data = new FloatSeq();
+    /** floats per light of the ground: x, y, radius, r, g, b, opacity */
+    public static final int groundStride = 7;
+    /**
+     * The glow of the ground itself: molten slag, magma rock, hot rock, cryofluid and the like report one light for
+     * every tile in view. They are kept out of {@link #data}: a lake of slag is hundreds of lights of equal strength,
+     * which took every place under the light limit - a few spots of the shore glowed, the rest did not, and weaker
+     * lights (shots) got no place at all. Scene paints these as plain round glows instead, any number of them
+     * (paintGround), and tells the normal-mapped blocks where the glow comes from (GlowField).
+     */
+    public final FloatSeq ground = new FloatSeq();
     /** Lights that are not plain circles, kept for Scene.drawGameLighting() while takeover is on. */
     public final Seq<Runnable> extras = new Seq<>();
     public boolean capture, takeover;
@@ -42,7 +54,14 @@ public class LightTap extends LightRenderer{
             Field field = Renderer.class.getDeclaredField("lights");
             field.setAccessible(true);
             field.set(Vars.renderer, tap);
-            return Vars.renderer.lights == tap ? tap : null;
+            if(Vars.renderer.lights != tap) return null;
+            try{
+                int matched = matchShots();
+                if(matched > 0) arc.util.Log.info("[mshaders] light colour matched to the shot for @ kind(s) of shots", matched);
+            }catch(Throwable t){
+                arc.util.Log.err("[mshaders] light colours of shots left as they are", t);
+            }
+            return tap;
         }catch(Throwable t){
             arc.util.Log.err("[mshaders] could not listen for lights", t);
             return null;
@@ -95,6 +114,8 @@ public class LightTap extends LightRenderer{
 
     /** Where the units are in this frame, each with how far up it is: 0 = on the ground .. 1 = in full flight. */
     private final IntFloatMap unitsAt = new IntFloatMap();
+    /** The same places, each with the radius of the unit there. */
+    private final IntFloatMap unitRadii = new IntFloatMap();
     private long unitsFrame = -1;
 
     private static int place(float x, float y){
@@ -106,7 +127,17 @@ public class LightTap extends LightRenderer{
         if(frame == unitsFrame) return;
         unitsFrame = frame;
         unitsAt.clear();
-        for(Unit unit : Groups.unit) unitsAt.put(place(unit.x, unit.y), unit.isFlying() ? Mathf.clamp(unit.elevation) : 0f);
+        unitRadii.clear();
+        for(Unit unit : Groups.unit){
+            unitsAt.put(place(unit.x, unit.y), unit.isFlying() ? Mathf.clamp(unit.elevation) : 0f);
+            unitRadii.put(place(unit.x, unit.y), unit.hitSize * 0.5f);
+        }
+    }
+
+    /** The radius of the unit a light reported at that place sits on; 0 where no unit is. */
+    public float unitRadiusAt(float x, float y){
+        findUnits();
+        return unitRadii.get(place(x, y), 0f);
     }
 
     /** How high the light reported at that place hangs: airHeight times how far up the unit there is; 0 where no flying unit is. */
@@ -128,8 +159,96 @@ public class LightTap extends LightRenderer{
         return !unitsAt.containsKey(place(x, y));
     }
 
+    /**
+     * Is that light the glow of the ground itself - of the floor, of what lies on it, or of a rock standing there? The
+     * game does not say who reports a light; such a light sits exactly on the middle of a tile without a building and
+     * has the radius that tile's floor, overlay or block glows with (Block.drawEnvironmentLight).
+     */
+    private static boolean ofGround(float x, float y, float radius){
+        Tile tile = Vars.world.tileWorld(x, y);
+        if(tile == null || tile.build != null || tile.worldx() != x || tile.worldy() != y) return false;
+        return glows(tile.floor(), radius) || glows(tile.overlay(), radius) || glows(tile.block(), radius);
+    }
+
+    private static boolean glows(Block block, float radius){
+        return block != null && block.emitLight && block.lightRadius == radius;
+    }
+
+    /**
+     * The colour used for the light of a shot in place of the one the game reports, found by the very Color object the
+     * shot's type hands over (matchShots gives each such type an object of its own).
+     */
+    private static final java.util.IdentityHashMap<Color, Color> shotColors = new java.util.IdentityHashMap<>();
+
+    /**
+     * Gives the light of a shot the colour of the shot.
+     *
+     * The game picks the colour of a shot's light apart from the colour of the shot, and where the content says nothing
+     * it is a fixed one: orange for every continuous laser (ContinuousLaserBulletType), white for every continuous
+     * flame, a pale yellow for every plain bullet (BulletType.lightColor = Pal.powerLight). So the green laser of a
+     * vela threw orange light. In the game that hardly shows - its lighting only takes darkness away - but here the
+     * colour of a light is seen: on the ground, and on the faces of normal-mapped blocks.
+     *
+     * For every kind of shot whose light colour is one of those fixed ones and whose own colour is clearly another
+     * (more than 40 degrees of hue away, or the light is white and the shot is not): the type gets a Color object of
+     * its own with the same value - so the game itself draws exactly what it drew - and while the mod is listening,
+     * a light reported with that object is given the shot's colour instead (ownColor).
+     * @return how many kinds of shots were matched
+     */
+    static int matchShots(){
+        int matched = 0;
+        for(BulletType type : Vars.content.bullets()){
+            Color given = type.lightColor;
+            // any other colour was chosen by whoever made the shot
+            if(given != Pal.powerLight && given != Color.orange && given != Color.white) continue;
+            Color own = type instanceof ContinuousLaserBulletType l && l.colors.length > 0 ? l.colors[Math.max(l.colors.length - 2, 0)]
+                : type instanceof ContinuousFlameBulletType f && f.colors.length > 0 ? f.colors[Math.max(f.colors.length - 2, 0)]
+                : type instanceof BasicBulletType b ? b.backColor : null;
+            if(own == null || !differs(given, own)) continue;
+            Color key = given.cpy();
+            type.lightColor = key;
+            shotColors.put(key, new Color(Mathf.clamp(own.r), Mathf.clamp(own.g), Mathf.clamp(own.b), 1f));
+            matched++;
+        }
+        return matched;
+    }
+
+    /** Is the colour of that shot clearly another than that of its light? */
+    private static boolean differs(Color light, Color shot){
+        float shotHue = hue(shot), lightHue = hue(light);
+        if(shotHue < 0f) return false;   // a white or grey shot: any light will do
+        if(lightHue < 0f) return true;
+        float apart = Math.abs(shotHue - lightHue);
+        return Math.min(apart, 360f - apart) > 40f;
+    }
+
+    /** Hue in degrees, or -1 for a colour with (almost) none. */
+    private static float hue(Color c){
+        float max = Math.max(c.r, Math.max(c.g, c.b)), min = Math.min(c.r, Math.min(c.g, c.b)), d = max - min;
+        if(max <= 0f || d / max < 0.25f) return -1f;
+        float h = max == c.r ? (c.g - c.b) / d : max == c.g ? (c.b - c.r) / d + 2f : (c.r - c.g) / d + 4f;
+        return (h * 60f + 360f) % 360f;
+    }
+
+    /** The colour a light reported with that Color object is given while the mod is listening: the shot's own (matchShots), else the same. */
+    private Color ownColor(Color reported){
+        if(!capture || shotColors.isEmpty()) return reported;
+        Color own = shotColors.get(reported);
+        return own != null ? own : reported;
+    }
+
     @Override
     public void add(float x, float y, float radius, Color color, float opacity){
+        color = ownColor(color);
+        if(capture && ofGround(x, y, radius)){
+            // kept apart from the light sources: a lake of slag is hundreds of these (see ground)
+            if(radius > 0f && opacity > 0f){
+                ground.add(x, y, radius, color.r);
+                ground.add(color.g, color.b, opacity);
+            }
+            if(gameLighting() && !takeover) super.add(x, y, radius, color, opacity);
+            return;
+        }
         if(moving != 1f && moves(x, y)){
             radius *= Mathf.sqrt(moving);
             opacity = Math.min(opacity * moving, 1f);
@@ -148,6 +267,7 @@ public class LightTap extends LightRenderer{
 
     @Override
     public void line(float x, float y, float x2, float y2, float stroke, Color tint, float alpha){
+        tint = ownColor(tint);
         // beam light. Without the lighting rule it is recorded as a few circles along the beam; with it, the game's own
         // drawing below is used (it ends up in add(Runnable)).
         if(moving != 1f){

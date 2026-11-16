@@ -38,6 +38,7 @@ import java.lang.reflect.*;
  *   walls=true     a row of the ten wall materials (1x1, touching) and a row of their large versions; the camera moves there
  *   drivers=true   three mass drivers above the test buildings; the camera moves there      aim=N  hold their heads at N, N+115 and N+230 degrees   recoil=N  and pushed back (1 = right after a shot)
  *   turrets=true   duo, hail, lancer, ripple, repair point, parallax, segment and build tower in a row above the test buildings; aim=N and recoil=N hold their heads too
+ *   turrets=a+b    those blocks instead, six tiles apart, all aiming at aim=N      warm=N  held that far warmed up (0..1; parts that open or slide)
  *   joins=true     add four conveyor joins (fed from both sides, one per direction) above the buildings and look at them
  *   joincam=N      look at join N (0..3) alone       time=N   hold the animation clock (Time.time) at N
  *   cam=X:Y        look at the tile X,Y counted from the lower-left corner of the test buildings (after blocks=true)
@@ -47,6 +48,8 @@ import java.lang.reflect.*;
  *   pin=X:Y        hold the unit spawned last at the tile X,Y counted from the lower-left corner of the test buildings (it does not fly off)
  *   band=true      wait until the glint band is over the view centre
  *   beam=true      a still glowing beam over the water (shore scene)
+ *   laser=true     the continuous laser of the vela, held in place across the middle of the view
+ *   crowd=a+b      one unit of each of those kinds held in a row just below the first test lamp; the camera moves there
  *   flash=true     a still muzzle flash next to the spawned unit
  *   many=N         N weak lights of equal strength over the view (a busy base)
  *   illuminator=true  a real Illuminator block with power (blocks scene)   tick=N  set the game clock
@@ -54,6 +57,7 @@ import java.lang.reflect.*;
  *   dark=true      switch on the map lighting rule (the game's own darkness and lights)
  *   fps=true       report the frame rate of the shot (vsync and the fps cap are switched off in the test profile)
  *   sprites=a+b    save atlas sprites enlarged and report where their light and dark pixels are
+ *   turretlist=true  report every turret-like block with the sprites it is put together from (base, body, parts; effects apart)
  * Facts about the shaders go to <folder>/report.txt.
  */
 public class TestKit extends Mod{
@@ -70,8 +74,15 @@ public class TestKit extends Mod{
     float camX, camY;
     boolean camSet, fx, lamp, fpsShot, bandShot, beam, flickerShot, flash;
     mindustry.gen.Unit lastUnit;
+    boolean laser;
+    mindustry.gen.Bullet laserShot;
     /** Where the unit spawned last is held every frame (world units); null = it is left to itself. */
     float[] pinAt;
+    /** crowd=a+b: units held in a row just below the first test lamp, and where each is held. */
+    final Seq<mindustry.gen.Unit> crowd = new Seq<>();
+    final FloatSeq crowdAt = new FloatSeq();
+    /** How far below the lamp the row is, world units (crowdbelow=N, before crowd=). */
+    float crowdBelow = 34f;
     int many;
     float[] beamPos;
     byte[] lastFrame;
@@ -85,7 +96,9 @@ public class TestKit extends Mod{
     float driverAim = Float.NaN;
     float driverRecoil = 0f;
     /** Where the test turrets stand (tile of the first one; 0 = none); they are four tiles apart. */
-    int turretX, turretY, turretCount;
+    int turretX, turretY, turretCount, turretStep = 4;
+    /** How far each of them is turned on from the one before, and how far warmed up they are held (NaN = left alone). */
+    float turretTurn = 50f, turretWarm = Float.NaN;
     int joinX, joinY;
     long fpsStart, shotStart, lastFx, runStart = Time.millis();
     String pendingDialog;
@@ -126,6 +139,9 @@ public class TestKit extends Mod{
                 // conveyors pick their animation frame from this clock while they are drawn
                 if(holdTime >= 0f) Time.time = holdTime;
                 if(holdSide) holdItemsAtDrill();
+                for(int c = 0; c < crowd.size; c++){
+                    if(crowd.get(c).isValid()) crowd.get(c).set(crowdAt.get(c * 2), crowdAt.get(c * 2 + 1));
+                }
                 if(pinAt != null && lastUnit != null && lastUnit.isValid()){
                     lastUnit.set(pinAt[0], pinAt[1]);
                     lastUnit.vel.setZero();
@@ -260,6 +276,7 @@ public class TestKit extends Mod{
                 case "fps" -> fpsShot = Boolean.parseBoolean(v);
                 case "band" -> bandShot = Boolean.parseBoolean(v);
                 case "beam" -> beam = Boolean.parseBoolean(v);
+                case "laser" -> laser = Boolean.parseBoolean(v);
                 case "flash" -> flash = Boolean.parseBoolean(v);
                 case "many" -> many = Integer.parseInt(v);
                 case "illuminator" -> placeIlluminator();
@@ -285,7 +302,8 @@ public class TestKit extends Mod{
                 case "cluster" -> placeCluster();
                 case "walls" -> placeWalls();
                 case "drivers" -> placeDrivers();
-                case "turrets" -> placeTurrets();
+                case "turrets" -> placeTurrets(v);
+                case "warm" -> turretWarm = Float.parseFloat(v);
                 case "aim" -> driverAim = Float.parseFloat(v);
                 case "recoil" -> driverRecoil = Float.parseFloat(v);
                 case "joins" -> placeJoins();
@@ -317,8 +335,11 @@ public class TestKit extends Mod{
                     var hoverType = Vars.content.unit(v);
                     if(hoverPos != null && hoverType != null) lastUnit = hoverType.spawn(Vars.player.team(), hoverPos[0], hoverPos[1]);
                 }
+                case "crowdbelow" -> crowdBelow = Float.parseFloat(v);
+                case "crowd" -> spawnCrowd(v);
                 case "pin" -> pinAt = new float[]{(baseX + Float.parseFloat(v.split(":")[0]) + 0.5f) * Vars.tilesize, (baseY + Float.parseFloat(v.split(":")[1]) + 0.5f) * Vars.tilesize};
                 case "sprites" -> dumpSprites(v);
+                case "turretlist" -> listTurrets();
                 case "zoom" -> {
                     // closer than the game lets a player go (for looking at single pixels of a sprite)
                     if(Integer.parseInt(v) > Vars.renderer.maxZoomInGame) Vars.renderer.maxZoom = Vars.renderer.maxZoomInGame = Integer.parseInt(v);
@@ -768,13 +789,23 @@ public class TestKit extends Mod{
     }
 
     /** One of each kind of block with a turning head, in a row above the test buildings (after blocks=true); the camera moves there. */
-    void placeTurrets(){
+    void placeTurrets(String which){
         if(baseW == 0 || baseShore) return;
         mindustry.world.Block[] kinds = {Blocks.duo, Blocks.hail, Blocks.lancer, Blocks.ripple, Blocks.repairPoint, Blocks.parallax, Blocks.segment, Blocks.buildTower};
+        turretStep = 4;
+        turretTurn = 50f;
+        if(!which.equals("true")){
+            // turrets=a+b: those blocks instead, six tiles apart (room for the large ones), all aiming the same way
+            String[] names = which.split("[+]");
+            kinds = new mindustry.world.Block[names.length];
+            for(int i = 0; i < names.length; i++) kinds[i] = Vars.content.block(names[i]);
+            turretStep = 6;
+            turretTurn = 0f;
+        }
         turretX = baseX - 6;
         turretY = baseY + 12;
         turretCount = kinds.length;
-        for(int dx = -3; dx <= kinds.length * 4 + 2; dx++){
+        for(int dx = -3; dx <= kinds.length * turretStep + 2; dx++){
             for(int dy = -4; dy <= 4; dy++){
                 var t = Vars.world.tile(turretX + dx, turretY + dy);
                 if(t != null && t.build == null && t.block() != Blocks.air && !t.block().isStatic()) t.setAir();
@@ -782,11 +813,11 @@ public class TestKit extends Mod{
         }
         StringBuilder placed = new StringBuilder();
         for(int i = 0; i < kinds.length; i++){
-            put(turretX + i * 4, turretY, kinds[i], Vars.player.team());
-            var b = Vars.world.build(turretX + i * 4, turretY);
+            put(turretX + i * turretStep, turretY, kinds[i], Vars.player.team());
+            var b = Vars.world.build(turretX + i * turretStep, turretY);
             placed.append(" ").append(kinds[i].name).append(b != null && b.block == kinds[i] ? "" : "(NOT placed)");
         }
-        camX = (turretX + (kinds.length - 1) * 2f + 0.5f) * Vars.tilesize;
+        camX = (turretX + (kinds.length - 1) * turretStep / 2f + 0.5f) * Vars.tilesize;
         camY = (turretY + 0.5f) * Vars.tilesize;
         lampPos = new float[]{(turretX + 6f) * Vars.tilesize, (turretY + 3f) * Vars.tilesize, (turretX + 20f) * Vars.tilesize, (turretY - 2.5f) * Vars.tilesize};
         line("  placed at tile " + turretX + "," + turretY + ":" + placed);
@@ -795,12 +826,13 @@ public class TestKit extends Mod{
     /** Every frame: the heads of those blocks held at driverAim + 50 degrees per block, the turrets pushed back as right after a shot (recoil=1). */
     void holdTurrets(){
         for(int i = 0; i < turretCount; i++){
-            var b = Vars.world.build(turretX + i * 4, turretY);
-            float aim = driverAim + i * 50f;
+            var b = Vars.world.build(turretX + i * turretStep, turretY);
+            float aim = driverAim + i * turretTurn;
             if(b instanceof mindustry.world.blocks.defense.turrets.BaseTurret.BaseTurretBuild t) t.rotation = aim;
             if(b instanceof mindustry.world.blocks.units.RepairTurret.RepairPointBuild t) t.rotation = aim;
             if(b instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild t){
                 t.curRecoil = driverRecoil;
+                if(!Float.isNaN(turretWarm)) t.shootWarmup = turretWarm;
                 // a turret with barrels that recoil one by one (the duo): only the first is pushed back, so the two can be told apart
                 if(t.curRecoils != null) for(int r = 0; r < t.curRecoils.length; r++) t.curRecoils[r] = r == 0 ? driverRecoil : 0f;
                 // Turret.updateTile works this out too, but only while the game is running the building
@@ -845,6 +877,13 @@ public class TestKit extends Mod{
         for(int i = 0; i < many; i++){
             float fx = Mathf.randomSeed(i * 2 + 1, -1f, 1f) * Core.camera.width * 0.45f, fy = Mathf.randomSeed(i * 2 + 2, -1f, 1f) * Core.camera.height * 0.45f;
             Drawf.light(camX + fx, camY + fy, 14f, Color.valueOf("ffd37f"), 0.5f);
+        }
+        if(laser){
+            // laser=true: the continuous laser of the vela (green, with the orange light the game gives such lasers), held in place from left of the middle of the view
+            if(laserShot == null || !laserShot.isAdded()){
+                laserShot = UnitTypes.vela.weapons.first().bullet.create(Vars.player.unit(), Vars.player.team(), camX - 70f, camY - 30f, 25f);
+            }
+            if(laserShot != null && laserShot.time > 40f) laserShot.time = 40f;
         }
         if(beam && beamPos != null){
             // a still, glowing, see-through beam over the water (additive, in the bloom layers), like a laser shot frozen in place
@@ -987,6 +1026,78 @@ public class TestKit extends Mod{
                 line("  sprite " + name + ": " + t);
             }
         }
+    }
+
+    /**
+     * turretlist=true: every block of the game that is drawn as a base with a head turning on it, and the sprites the game
+     * puts it together from, with their sizes: the ones that carry the picture (base, body, parts) and the ones that are
+     * only effects laid over it (heat, liquid, top). A list of what there is to draw for each of them.
+     */
+    void listTurrets(){
+        for(mindustry.world.Block block : Vars.content.blocks()){
+            if(block.minfo.mod != null) continue;
+            if(block instanceof mindustry.world.blocks.defense.turrets.Turret turret && turret.drawer instanceof mindustry.world.draw.DrawTurret drawer){
+                line("turret " + block.name + " size=" + block.size + " base=" + reg(drawer.base) + " body=" + reg(block.region) + " outline=" + reg(drawer.outline)
+                    + " preview=" + reg(drawer.preview) + " | effects: heat=" + reg(drawer.heat) + " liquid=" + reg(drawer.liquid) + " top=" + reg(drawer.top));
+                listParts(drawer.parts, 1);
+            }else if(block instanceof mindustry.world.blocks.distribution.MassDriver b){
+                line("head " + block.name + " size=" + block.size + " base=" + reg(b.baseRegion) + " body=" + reg(block.region));
+            }else if(block instanceof mindustry.world.blocks.units.RepairTurret b){
+                line("head " + block.name + " size=" + block.size + " base=" + reg(b.baseRegion) + " body=" + reg(block.region));
+            }else if(block instanceof mindustry.world.blocks.defense.BuildTurret b){
+                line("head " + block.name + " size=" + block.size + " base=" + reg(b.baseRegion) + " body=" + reg(block.region) + " | effects: glow=" + reg(b.glowRegion));
+            }else if(block instanceof mindustry.world.blocks.defense.turrets.TractorBeamTurret b){
+                line("head " + block.name + " size=" + block.size + " base=" + reg(b.baseRegion) + " body=" + reg(block.region));
+            }else if(block instanceof mindustry.world.blocks.defense.turrets.PointDefenseTurret b){
+                line("head " + block.name + " size=" + block.size + " base=" + reg(b.baseRegion) + " body=" + reg(block.region));
+            }
+        }
+    }
+
+    void listParts(Seq<mindustry.entities.part.DrawPart> parts, int depth){
+        for(mindustry.entities.part.DrawPart drawn : parts){
+            String pad = "  ".repeat(depth);
+            if(!(drawn instanceof mindustry.entities.part.RegionPart part)){
+                line(pad + "effect-part " + drawn.getClass().getSimpleName());
+                continue;
+            }
+            StringBuilder sb = new StringBuilder(pad + (part.drawRegion ? "part" : "heat-only-part"));
+            for(TextureRegion r : part.regions) sb.append(' ').append(reg(r));
+            if(part.under) sb.append(" under");
+            if(part.mirror) sb.append(" mirror");
+            if(part.outline) sb.append(" outline");
+            if(part.blending != Blending.normal) sb.append(" blended");
+            if(part.color != null || part.mixColor != null) sb.append(" coloured");
+            if(part.layer > 0 || part.layerOffset != 0f) sb.append(" layer=").append(part.layer).append('+').append(part.layerOffset);
+            sb.append(" move=").append(part.moveX).append(',').append(part.moveY).append(" rot=").append(part.moveRot).append(" moves=").append(part.moves.size);
+            if(part.growX != 0f || part.growY != 0f || part.xScl != 1f || part.yScl != 1f) sb.append(" scaled");
+            sb.append(" | heat=").append(reg(part.heat));
+            line(sb.toString());
+            listParts(part.children, depth + 1);
+        }
+    }
+
+    static String reg(TextureRegion r){
+        return r instanceof TextureAtlas.AtlasRegion a && r.found() && a.name != null ? a.name + "(" + r.width + "x" + r.height + ")" : "-";
+    }
+
+    /** crowd=a+b+c: one unit of each of those kinds in a row just below the first test lamp (after blocks=true and the like), held there; the camera moves to them. */
+    void spawnCrowd(String names){
+        if(lampPos == null) return;
+        String[] list = names.split("[+]");
+        for(int i = 0; i < list.length; i++){
+            var type = Vars.content.unit(list[i]);
+            if(type == null){
+                line("  no such unit: " + list[i]);
+                continue;
+            }
+            float x = lampPos[0] + (i - (list.length - 1) / 2f) * 44f, y = lampPos[1] - crowdBelow;
+            crowd.add(type.spawn(Vars.player.team(), x, y));
+            crowdAt.add(x, y);
+        }
+        camX = lampPos[0];
+        camY = lampPos[1] - crowdBelow * 0.7f;
+        line("  crowd of " + crowd.size + " below the lamp at " + lampPos[0] + "," + lampPos[1]);
     }
 
     void line(String s){

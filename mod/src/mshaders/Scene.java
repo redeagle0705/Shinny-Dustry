@@ -77,6 +77,39 @@ public class Scene{
     private static final Blending tintBlend = new Blending(Gl.dstColor, Gl.srcColor, Gl.zero, Gl.one);
     private TextureRegion circleRegion;
     private boolean takeover, gameLit;
+    /** The round glow a light of the ground is painted with on bright maps (paintGround). */
+    private TextureRegion groundRegion;
+    /** How much stronger than reported the glow of the ground is painted on bright maps. */
+    private static final float groundGain = 2.2f;
+    /**
+     * What 100% of the "glowing ground" setting stands for on bright maps, as a number of times stronger than plain
+     * groundGain. A glow k times stronger is painted with k times the opacity (up to 1, all the picture holds) and
+     * sqrt(k) times the radius, like the lights of moving things (LightTap.moving); the normal-mapped blocks get k
+     * times its weight.
+     */
+    private static final float groundBoost = 1.5f;
+
+    /**
+     * A channel of the colour of a ground light, made deeper: the weaker channels of the colour are pushed down (each
+     * squared against the strongest one), the strongest stays. The orange of slag (1, 0.65, 0) becomes (1, 0.42, 0).
+     * As reported, its glow on grey rock came out a yellowish olive rather than orange: where the picture brightens
+     * the rock, red and green end up close together.
+     * @param top the strongest channel of that colour
+     */
+    static float deep(float channel, float top){
+        return top <= 0f ? 0f : channel * channel / top;
+    }
+
+    /** The "glowing ground" setting: 1 = 100%, 0 = off. */
+    private static float groundLevel(){
+        return Math.max(ShaderMod.percent(ShaderMod.lightsGround, 100), 0f);
+    }
+    /** Where the glow of the ground comes from, for the normal-mapped blocks. */
+    private final GlowField glowField = new GlowField();
+    /** What of the units stands in the way of light this frame (bodies, feet, legs, each with its height). */
+    private final UnitShades unitShades = new UnitShades();
+    private final Runnable unitPass = this::unitPass;
+    private boolean wantUnits;
     /** What stops light (solid blocks only), and the texture the light shader reads this frame. */
     private final Occluders occluders = new Occluders();
     private Texture lightMask;
@@ -124,6 +157,7 @@ public class Scene{
             Draw.flush();
             Blending.disabled.apply();
             lightPass(light, Math.max(scene.getWidth() / 4, 2), Math.max(scene.getHeight() / 4, 2), 0);
+            paintGround(light, true);
             // back to what the frame expects (see copyScene)
             Blending.normal.apply();
             lightFrame = frame;
@@ -223,6 +257,9 @@ public class Scene{
             shapeShader = new Shader(vert, lightsDefine + shapeSource){
                 @Override
                 public void apply(){
+                    // the glow of the ground: how strong, what colour and from where at every tile (GlowField)
+                    glowField.bind(this, 3, 4);
+                    set(this, "u_glowGain", groundLevel() * groundBoost);
                     aim.getTexture().bind(2);
                     shapeFrom.getTexture().bind(0);
                     set(this, "u_aim", 2);
@@ -249,6 +286,14 @@ public class Scene{
                 @Override
                 public void apply(){
                     set(this, "u_color", ShaderMod.percent(ShaderMod.lightsColor, 100));
+                    // what the shots and effects of this frame added to the picture: those keep their own colour
+                    boolean spared = glowFrame == Core.graphics.getFrameId();
+                    if(spared){
+                        glow.getTexture().bind(1);
+                        gameLight.getTexture().bind(0);
+                    }
+                    set(this, "u_added", 1);
+                    set(this, "u_spare", spared ? 1f : 0f);
                 }
             };
             blurShader = new Shader(vert, Vars.tree.get("shaders/mshaders-blur.frag").readString()){
@@ -261,6 +306,17 @@ public class Scene{
                 @Override
                 public void apply(){
                     setCamera(this);
+                    // units in the way of the light (UnitShades)
+                    boolean shaded = wantUnits && unitShades.ready();
+                    set(this, "u_unitsOn", shaded ? 1f : 0f);
+                    if(shaded){
+                        unitShades.texture().bind(1);
+                        (lightMask != null ? lightMask : scene.getTexture()).bind(0);
+                        set(this, "u_unitMask", 1);
+                        set(this, "u_unitTop", unitShades.top());
+                        // how much of the light a unit takes away where it is in the way: 1 = all of it
+                        set(this, "u_unitDepth", Math.min(Math.max(ShaderMod.percent(ShaderMod.lightsUnitsDepth, 65), 0f), 1f));
+                    }
                     set(this, "u_masked", lightMask != null ? 1f : 0f);
                     set(this, "u_own", lightMaskOwn ? 1f : 0f);
                     set(this, "u_mode", lightMode);
@@ -291,6 +347,23 @@ public class Scene{
             for(FrameBuffer b : new FrameBuffer[]{objects, light, aim, before, after, glow, gameLight, raw, near}){
                 b.getTexture().setFilter(TextureFilter.linear, TextureFilter.linear);
             }
+            // The round glow for the lights of the ground: full in the middle, fading to nothing at the rim the way the
+            // game's own light sprite "circle-shadow" does (the fall-off mshaders-light.frag uses in mode 2). Colour and
+            // cover hold the same value, so the largest of several glows can be taken channel by channel (paintGround).
+            int size = 128;
+            Pixmap round = new Pixmap(size, size);
+            for(int x = 0; x < size; x++){
+                for(int y = 0; y < size; y++){
+                    float far = arc.math.Mathf.clamp((arc.math.Mathf.dst(x + 0.5f, y + 0.5f, size / 2f, size / 2f) / (size / 2f) - 0.2f) / 0.8f);
+                    float v = 1f - far * far * (3f - 2f * far);
+                    round.set(x, y, Tmp.c1.set(v, v, v, v).rgba());
+                }
+            }
+            Texture glowing = new Texture(round);
+            round.dispose();
+            glowing.setFilter(TextureFilter.linear, TextureFilter.linear);
+            groundRegion = new TextureRegion(glowing);
+            unitShades.init();
         }catch(Throwable t){
             composite = null;
             Log.err("[mshaders] screen effects unavailable", t);
@@ -319,12 +392,15 @@ public class Scene{
             tap.moving = 1f;
             tap.airHeight = 0f;
             tap.data.clear();
+            tap.ground.clear();
         }
+        glowField.clear();
         boolean post = on(ShaderMod.postOn);
         // the mirror pictures are needed by the water and by the ice (both are drawn through shader layers, which the game
         // only uses while "animated surfaces" is on)
         wantObjects = on(ShaderMod.reflectOn) && (on(ShaderMod.waterOn) || on(ShaderMod.iceOn)) && Vars.renderer.animateWater;
         wantLight = on(ShaderMod.lightsOn) && tap != null;
+        wantUnits = wantLight && on(ShaderMod.lightsUnits);
         wantGlint = on(ShaderMod.glintOn);
         wantShape = on(ShaderMod.normalsOn) && surfaces.count() > 0;
         if(!post && !wantObjects && !wantLight && !wantGlint && !wantShape) return;
@@ -348,15 +424,30 @@ public class Scene{
         capturing = true;
     }
 
+    /** Early in the frame: the units in view drawn into the picture the light passes read (UnitShades), half the size of the screen. */
+    private void unitPass(){
+        if(!capturing || tap == null) return;
+        // a flying unit hangs where its glow hangs (LightTap.airHeight); three tiles up if that setting is off
+        unitShades.draw(scene.getWidth() / 2, scene.getHeight() / 2, tap.airHeight > 0f ? tap.airHeight : airLevel);
+        // back to what the frame expects (see copyScene)
+        Blending.normal.apply();
+    }
+
     /** Trigger.draw fires inside Renderer.draw() while the frame's layers are being queued. */
     private void queue(){
         if(!capturing) return;
         // BlockRenderer.drawShadows() runs at Layer.block - 1; right after it its texture is still in Tmp.tr1
         if(wantLight || wantGlint) Draw.draw(Layer.block - 1f + 0.0005f, grabMask);
-        if(wantObjects){
+        // the picture of the units for the light passes: before the first of them (the sun shadows ask for the lamps' light at Layer.block - 1)
+        if(wantUnits) Draw.draw(Layer.block - 2f, unitPass);
+        // What the shots and effects add to the picture is wanted by the mirror pictures - and on a dark map by the
+        // colouring of what the lights light, which must leave the things that glow by themselves alone (tintShader).
+        if(wantObjects || (takeover && Core.settings.getInt(ShaderMod.lightsColor, 100) > 0)){
             // just outside the bullet and effect layers (the game's bloom wraps Layer.bullet - 0.02 .. Layer.effect + 0.02)
             Draw.draw(Layer.bullet - 0.03f, snapshotBefore);
             Draw.draw(Layer.effect + 0.03f, buildGlow);
+        }
+        if(wantObjects){
             // after bullets, effects and flying units, before overlays, weather and the game's lighting
             Draw.draw(Layer.flyingUnit + 1f, buildObjects);
         }
@@ -413,6 +504,8 @@ public class Scene{
         // the light sources, each with its own place, for the shading
         shapeLit = tap != null;
         if(shapeLit) pickLights();
+        // the glow of the ground is not among them: where it comes from at each tile is worked out apart (GlowField)
+        if(tap != null && groundLevel() > 0f) glowField.build(tap.ground);
         // "the direction most light comes from" is now only needed by the glint
         if(wantGlint && lightMask != null && tap != null){
             Blending.disabled.apply();
@@ -578,7 +671,10 @@ public class Scene{
             // on a dark map the lights are already in the game's light picture (drawGameLighting), nothing is added on top
             if(wantLight && !takeover){
                 // already made early in this frame if the shadows asked for it (lampLight)
-                if(lightFrame != Core.graphics.getFrameId()) lightPass(light, w, h, 0);
+                if(lightFrame != Core.graphics.getFrameId()){
+                    lightPass(light, w, h, 0);
+                    paintGround(light, false);
+                }
                 lightReady = true;
             }
             if(wantGlint || wantShape){
@@ -591,6 +687,7 @@ public class Scene{
         if(report){
             // only while the test kit is running: lets it write into its report what really happened this frame
             System.setProperty("mshaders.status", "mask " + (mask != null) + ", lights recorded " + (tap == null ? -1 : tap.data.size / LightTap.stride)
+                + ", unit shapes " + unitShades.drawn() + ", ground lights " + (tap == null ? -1 : tap.ground.size / LightTap.groundStride) + ", glow field " + glowField.ready() + " (last made in " + glowField.lastMillis + " ms)"
                 + ", lights drawn " + (lit ? lightCount : 0) + ", light pass " + lightReady + ", game lighting drawn here " + gameLit + ", glint " + glintReady + ", reflection image " + (reflection() != null));
         }
         Draw.blit(scene.getTexture(), composite);
@@ -620,6 +717,41 @@ public class Scene{
         target.begin(Color.clear);
         Draw.blit(raw.getTexture(), blurShader);
         target.end();
+    }
+
+    /**
+     * Bright maps: the glow of the ground (LightTap.ground - slag, magma rock and the like, one light per tile) painted
+     * into that light picture, each as a plain round glow, however many there are. Nothing stops this light and it is
+     * not counted against the light limit. Where glows overlap the strongest counts, as in the game's own light picture
+     * (LightRenderer.draw) - added up, a lake of slag was far brighter than the picture can hold and turned from orange
+     * to yellow.
+     * @param inFrame called while the frame's queue is being played back (the sprite batch is sorting)
+     */
+    private void paintGround(FrameBuffer target, boolean inFrame){
+        if(tap == null || groundRegion == null) return;
+        int n = tap.ground.size / LightTap.groundStride;
+        float boost = groundLevel() * groundBoost;
+        if(n == 0 || boost <= 0f) return;
+        float wide = Math.min((float)Math.sqrt(boost), 2f) * 2f;
+        float[] g = tap.ground.items;
+        Draw.flush();
+        if(inFrame) Draw.sort(false);
+        Draw.color();
+        target.begin();
+        Gl.blendEquationSeparate(Gl.max, Gl.max);
+        for(int i = 0; i < n; i++){
+            int o = i * LightTap.groundStride;
+            float strength = Math.min(g[o + 6] * groundGain * boost, 1f);
+            float top = Math.max(g[o + 3], Math.max(g[o + 4], g[o + 5]));
+            Draw.color(deep(g[o + 3], top) * strength, deep(g[o + 4], top) * strength, deep(g[o + 5], top) * strength, strength);
+            Draw.rect(groundRegion, g[o], g[o + 1], g[o + 2] * wide, g[o + 2] * wide);
+        }
+        Draw.color();
+        target.end();
+        Gl.blendEquationSeparate(Gl.funcAdd, Gl.funcAdd);
+        if(inFrame) Draw.sort(true);
+        // the sprite batch has switched blending on; the passes around this one are drawn without
+        Blending.disabled.apply();
     }
 
     /**
@@ -654,6 +786,20 @@ public class Scene{
         // as in the original: colours blend normally, the amount of light is the largest of all lights
         Gl.blendEquationSeparate(Gl.funcAdd, Gl.max);
         Blending.normal.apply();
+        // the glow of the ground (slag, magma rock, ...), one light per tile: all of them, the way the game draws them -
+        // at 100% of the "glowing ground" setting as strong and wide as the game has them, else more or less; the colour deeper (deep).
+        // Before the beams and the other lights below: where one of those shines, the colour of the light is its own,
+        // not that of the ground under it (drawn last, a field of hot rock gave every beam above it its orange).
+        float level = groundLevel(), wide = Math.min((float)Math.sqrt(level), 2f) * 2f;
+        float[] g = tap.ground.items;
+        int grounds = level > 0f ? tap.ground.size / LightTap.groundStride : 0;
+        for(int i = 0; i < grounds; i++){
+            int o = i * LightTap.groundStride;
+            float top = Math.max(g[o + 3], Math.max(g[o + 4], g[o + 5]));
+            Draw.color(Color.toFloatBits(deep(g[o + 3], top), deep(g[o + 4], top), deep(g[o + 5], top), Math.min(g[o + 6] * level, 1f)));
+            Draw.rect(circleRegion, g[o], g[o + 1], g[o + 2] * wide, g[o + 2] * wide);
+        }
+        Draw.color();
         for(Runnable run : extras){
             run.run();
         }
@@ -732,7 +878,10 @@ public class Scene{
                 lightColors[k + 1] = d[o + 4];
                 lightColors[k + 2] = d[o + 5];
                 // what the light sits in; for the glow of a flying unit, how high it hangs instead (1000 + world units)
-                lightColors[k + 3] = d[o + 7] > 0f ? 1000f + d[o + 7] : lampCode(d[o], d[o + 1]);
+                float code = d[o + 7] > 0f ? 1000f + d[o + 7] : lampCode(d[o], d[o + 1]);
+                // a light that sits on a unit: minus the radius of that unit, which then is not in the way of its own light (mshaders-light.frag, unitsOpen)
+                if(code == 0f) code = -tap.unitRadiusAt(d[o], d[o + 1]);
+                lightColors[k + 3] = code;
                 lightCount++;
             }
         }

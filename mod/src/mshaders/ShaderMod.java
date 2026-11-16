@@ -17,7 +17,7 @@ public class ShaderMod extends Mod{
     floorGrass = "mshaders-floor-grass", floorHot = "mshaders-floor-hot", floorMetal = "mshaders-floor-metal", floorRelief = "mshaders-floor-relief",
     reflectOn = "mshaders-reflect", reflectStrength = "mshaders-reflect-strength",
     shadowOn = "mshaders-shadow", shadowLength = "mshaders-shadow-length", shadowStrength = "mshaders-shadow-strength", shadowCycle = "mshaders-shadow-cycle", shadowQuality = "mshaders-shadow-quality", sunAngle = "mshaders-sun-angle",
-    lightsOn = "mshaders-lights", lightsStrength = "mshaders-lights-strength", darkDepth = "mshaders-dark-depth", lightsColor = "mshaders-lights-color", lightsMoving = "mshaders-lights-moving", lightsMax = "mshaders-lights-max", lightsAir = "mshaders-lights-air",
+    lightsOn = "mshaders-lights", lightsStrength = "mshaders-lights-strength", darkDepth = "mshaders-dark-depth", lightsColor = "mshaders-lights-color", lightsMoving = "mshaders-lights-moving", lightsMax = "mshaders-lights-max", lightsAir = "mshaders-lights-air", lightsGround = "mshaders-lights-ground", lightsUnits = "mshaders-lights-units", lightsUnitsDepth = "mshaders-lights-units-depth",
     glintOn = "mshaders-glint", glintStrength = "mshaders-glint-strength", glintBand = "mshaders-glint-band",
     normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsHeight = "mshaders-normals-height",
     postOn = "mshaders-post", vignette = "mshaders-vignette", saturation = "mshaders-saturation", contrast = "mshaders-contrast", warmth = "mshaders-warmth";
@@ -39,7 +39,7 @@ public class ShaderMod extends Mod{
             floorsOn, true, floorRock, 100, floorSand, 100, floorSnow, 100, floorGrass, 100, floorHot, 100, floorMetal, 100, floorRelief, 100,
             reflectOn, true, reflectStrength, 100,
             shadowOn, true, shadowLength, 15, shadowStrength, 70, shadowCycle, 4, shadowQuality, 80, sunAngle, 45,
-            lightsOn, true, lightsStrength, 100, darkDepth, 50, lightsColor, 100, lightsMoving, 100, lightsMax, 64, lightsAir, 100,
+            lightsOn, true, lightsStrength, 100, darkDepth, 50, lightsColor, 100, lightsMoving, 100, lightsMax, 64, lightsAir, 100, lightsGround, 100, lightsUnits, true, lightsUnitsDepth, 65,
             glintOn, true, glintStrength, 100, glintBand, 100,
             normalsOn, true, normalsStrength, 100, normalsHeight, true,
             postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15
@@ -76,12 +76,15 @@ public class ShaderMod extends Mod{
             t.sliderPref(sunAngle, 45, 0, 355, 5, i -> i + "°");
             t.sliderPref(shadowCycle, 4, 0, 30, 1, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : Core.bundle.format("mshaders.minutes", i));
             t.checkPref(lightsOn, true);
+            t.checkPref(lightsUnits, true);
+            t.sliderPref(lightsUnitsDepth, 65, 10, 100, 5, i -> i + "%");
             t.sliderPref(lightsStrength, 100, 0, 200, 5, i -> i + "%");
             t.sliderPref(darkDepth, 50, 0, 100, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
             t.sliderPref(lightsColor, 100, 0, 200, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
             t.sliderPref(lightsMoving, 100, 100, 500, 25, i -> i + "%");
             t.sliderPref(lightsMax, 64, 16, Scene.maxLights, 16, i -> i + "");
             t.sliderPref(lightsAir, 100, 0, 300, 25, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
+            t.sliderPref(lightsGround, 100, 0, 300, 25, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");
             t.checkPref(glintOn, true);
             t.sliderPref(glintStrength, 100, 0, 200, 5, i -> i + "%");
             t.sliderPref(glintBand, 100, 0, 200, 5, i -> i == 0 ? Core.bundle.get("mshaders.off", "off") : i + "%");

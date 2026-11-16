@@ -38,12 +38,21 @@ uniform int u_count;           // light sources of this frame
 uniform vec4 u_lights[MAX_LIGHTS];     // x, y, radius, opacity
 uniform vec4 u_colors[MAX_LIGHTS];     // their colours
 
+// The glow of the ground (molten slag, magma rock, ...): too many lights to go through one by one, so GlowField.java
+// works out for every tile what a block there gets of it. One texel per tile, read between texels.
+uniform float u_glowOn;        // 1 when the two pictures below hold this frame's glow
+uniform sampler2D u_glow;      // rgb = colour of the glow times a, a = square root of (weight of the strongest glowing tile in reach / 1.3)
+uniform sampler2D u_glowDir;   // how strongly the glowing ground pulls to the right, left, up and down (r, g, b, a): sideways per unit of height, 0..LEAN squeezed into 0..1
+uniform float u_glowGain;      // how many times stronger than worked out the glow counts (the "glowing ground" setting)
+uniform vec4 u_glowRect;       // world position of the corner of the first texel; 1 / (size of the whole picture in world units)
+
 uniform float u_px;            // world units per screen pixel
 
 varying vec2 v_texCoords;
 
 const float SLOPE = 8.0;       // how steep a height map's steps come out: lean = (difference in height, 0..1, per sprite pixel) * this
 const float RELIEF_FLOOR = 0.6; // the darkest a face from a height map gets, as a share of a flat face
+const float LEAN = 4.0;        // the largest sideways-per-height u_glowDir can hold (GlowField.lean)
 
 // The height at another place of the picture, for a pixel that came from a height map; "own" where there is no height
 // to read - nothing drawn, a block with a normal map, an item lying on the belt. So the outline of a block does not
@@ -120,6 +129,22 @@ void main(){
         vec3 hue = u_colors[i].rgb / max(max(u_colors[i].r, max(u_colors[i].g, u_colors[i].b)), 0.05);
         got += hue * (weight * min(max(dot(n, from), 0.0) / from.z, 2.2));
         level += hue * weight;
+    }
+    // The glow of the ground counts as one more light: as strong as the strongest glowing tile in reach, coming from
+    // the sides the glowing ground lies on - a face gets the more of it the more glowing ground it is turned to.
+    if(u_glowOn > 0.5){
+        vec2 at = (world - u_glowRect.xy) * u_glowRect.zw;
+        vec4 g = texture2D(u_glow, at);
+        if(g.a > 0.004){
+            float weight = g.a * g.a * 1.3 * u_glowGain;
+            // what a single light gives a face is  n.z + n.xy * (way to the light / its height);  here the second part
+            // comes from the pull of the side the face is turned to
+            vec4 pull = texture2D(u_glowDir, at) * LEAN;
+            float side = (n.x > 0.0 ? n.x * pull.r : -n.x * pull.g) + (n.y > 0.0 ? n.y * pull.b : -n.y * pull.a);
+            vec3 hue = g.rgb / max(max(g.r, max(g.g, g.b)), 0.004);
+            got += hue * (weight * min(max(n.z + side, 0.0), 2.2));
+            level += hue * weight;
+        }
     }
     vec3 factor = 1.0 + (got / level - 1.0) * u_shape;
     // Relief from a height map is small - an arrow one step above its belt. Next to a lamp on a dark map its far side

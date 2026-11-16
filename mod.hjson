@@ -1,8 +1,8 @@
 name: "mshaders"
 displayName: "Mindustry Shaders"
 author: "REDEagle0705, Claude"
-description: "Visual effects only: water with reflections, ice and ground effects, directional block shadows, lights that blocks stop, metal glint, hand-drawn normal maps that light blocks by calculation, and a colour pass. Every effect can be switched off in Settings > Shaders. Client-side, adds no content. Desktop and Android. Tested on v160.7."
-version: "0.1.1"
+description: "Visual effects only: water with reflections, ice and ground effects, directional block shadows, lights that blocks and units stop, metal glint, hand-drawn normal maps that light blocks by calculation, and a colour pass. Every effect can be switched off in Settings > Shaders. Client-side, adds no content. Desktop and Android. Tested on v160.7."
+version: "0.1.2"
 main: "mshaders.ShaderMod"
 minGameVersion: "160"
 java: true
