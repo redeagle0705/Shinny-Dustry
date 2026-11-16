@@ -34,6 +34,27 @@ function Build-JavaMod([string]$name, [string]$dir, [string]$meta = "") {
 New-Item -ItemType Directory -Force $build | Out-Null
 # The mod's mod.hjson lies at the top of the repository: the list behind the in-game mod browser looks for it there.
 Build-JavaMod "mshaders" (Join-Path $root "mod") (Join-Path $root "mod.hjson")
+
+# Android: there the game loads a Java mod from classes.dex inside the jar, not from the .class files (Mods.java).
+# If the dex converter is there (tools\vendor\r8-<version>.jar; it comes from Google's Maven repository,
+# dl.google.com/android/maven2/com/android/tools/r8/), the classes are converted and classes.dex is added to the
+# same jar; the desktop game ignores it.
+$d8 = Get-ChildItem (Join-Path $PSScriptRoot "vendor") -Filter "r8-*.jar" -ErrorAction SilentlyContinue | Sort-Object Name | Select-Object -Last 1
+if ($d8) {
+    $modJar = Join-Path $build "mshaders.jar"
+    $dex = Join-Path $build "dex"
+    if (Test-Path $dex) { Remove-Item -Recurse -Force $dex }
+    New-Item -ItemType Directory -Force $dex | Out-Null
+    # --lib: the JDK stands in for the Android library (only the class hierarchy is looked up); --min-api 14 is the lowest the game supports
+    & "$jdk\java.exe" -cp $d8.FullName com.android.tools.r8.D8 --min-api 14 --lib (Split-Path -Parent $jdk) --classpath $gameJar --output $dex $modJar
+    if ($LASTEXITCODE -ne 0) { throw "d8 failed" }
+    & "$jdk\jar.exe" --update --file $modJar -C $dex classes.dex
+    if ($LASTEXITCODE -ne 0) { throw "adding classes.dex failed" }
+    $dexSize = (Get-Item (Join-Path $dex "classes.dex")).Length
+    Write-Output "added classes.dex for Android ($dexSize bytes, $($d8.Name))"
+} else {
+    Write-Output "no dex converter in tools\vendor: mshaders.jar is desktop-only"
+}
 Build-JavaMod "mshaders-testkit" (Join-Path $root "testkit")
 
 $zip = Join-Path $build "exp1-water-override.zip"

@@ -10,3 +10,5 @@
 *.tmp
 # paths of this computer (see tools/local.example.ps1)
 /tools/local.ps1
+# downloaded tools (the Android dex converter), see tools/build.ps1
+/tools/vendor/

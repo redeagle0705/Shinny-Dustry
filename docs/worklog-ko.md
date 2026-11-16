@@ -6,7 +6,7 @@
 화면만 바꾸는 Java 모드입니다. 콘텐츠를 추가하지 않고(`hidden: true`), 효과는 모두 설정에서 끌 수 있습니다.
 게임의 공식 jar와 소스는 읽기만 합니다(모드에 넣지 않음).
 
-- 모드 jar: `build\mshaders.jar` (297,426바이트, sha256 `f820ff41…3f60`)
+- 모드 jar: `build\mshaders.jar` (337,566바이트, sha256 `1b494f91…d142`)
 - 넣는 방법: 게임의 **모드 → 모드 가져오기**에서 위 jar를 고르고 게임을 다시 시작합니다. 이 작업에서는 Steam 게임에 설치하지 않았습니다.
 - 설정 위치: **설정 → 셰이더** (스크린샷 `screenshots\final\6-settings.png`, 체크 10개 + 슬라이더 30개 — 스크린샷은 "높이맵 우선" 체크가 생기기 전의 것)
 
@@ -533,11 +533,19 @@ java tools\HeightGen.java preview heightmaps\silicon-smelter.png heightmaps\sili
 - **주소로 직접 가져오기** (`ModsDialog.java:623-675`): 게임은 저장소의 주 언어가 Java(또는 Kotlin, Groovy, Scala)면 Java 모드로 보고 최신 릴리스의 `.jar`를 받아 설치함. 이 저장소는 GitHub가 주 언어를 Java로 잡고, 릴리스 v0.1.0에 `mshaders.jar`가 붙어 있음. 게임에서 실제로 받아 보는 시험은 하지 않음.
 - **모드 브라우저 목록** (Anuken/MindustryMods의 README와 `ModUpdater.java`): `mindustry-mod` 토픽, 저장소 맨 위나 `assets/`의 `mod.hjson`/`mod.json`, Java 모드는 `minGameVersion` 154 이상과 jar가 붙은 릴리스가 필요. 2시간마다 갱신. 그래서 `mod\mod.hjson`을 저장소 맨 위 `mod.hjson`으로 옮기고 `build.ps1`이 거기서 읽게 함(jar 안의 내용은 전과 같음). 토픽은 저장소 주인이 GitHub에서 넣어야 함.
 
-### 모바일에서는 설치되지 않음 (2026-11-16, 소스 확인)
+### 모바일 — 처음에는 설치되지 않았음 (2026-11-16, 소스 확인; 안드로이드는 바로 아래 절에서 해결)
 
 - 안드로이드: 게임은 Java 모드의 jar에서 `classes.dex`를 찾음(`Mods.java:1162-1163`). 이 모드의 jar에는 `.class`만 있고 `classes.dex`가 없어서 불러오지 못함. 안드로이드용으로 변환(dex)하는 단계를 빌드에 넣지 않았고, 셰이더가 모바일 그래픽에서 도는지도 확인한 적 없음.
 - iOS: 게임이 Java 모드를 받지 않음(`Mods.java:1185-1187`, "Java class mods are not supported on iOS.").
 - README 맨 위에 PC 전용이라고 적음.
+
+### 안드로이드 — jar에 안드로이드용 코드 넣기 (2026-11-16): **됨 (제작자가 폰 한 대에서 확인)**
+
+- 구글의 D8 변환기(`r8-9.5.32.jar`, 구글 Maven 저장소, 약 20MB, 공개된 sha256과 일치 확인)를 `tools\vendor\`에 둠(저장소에는 올리지 않음).
+- `tools\build.ps1`: 변환기가 있으면 모드의 클래스를 `classes.dex`로 바꿔 같은 `mshaders.jar`에 넣음(`--min-api 14`, 클래스 계층은 JDK와 게임 jar에서 찾게 함, 경고 없음). 변환기가 없으면 전처럼 PC 전용 jar가 나옴.
+- 결과: `classes.dex` 82,752바이트, jar 337,559바이트. PC 시험 실행은 전과 같음(셰이더·광원·그림자 모두 ok 로그).
+- **폰에서 확인(제작자, 2026-11-16)**: 파일 가져오기로 넣으니 켜지고, 방향 그림자·바닥 효과·물이 보이며 화면의 FPS 표시가 62. 폰 기종과 안드로이드 버전은 기록하지 않음. 어두운 맵의 빛 가림, 노멀맵 블록, 큰 기지에서의 속도는 폰에서 아직 보지 않음. 최신 안드로이드가 Java 모드 불러오기를 막는 기기에서는 안 될 수 있음(게임이 `error.moddex`로 알림).
+- 모드 버전을 0.1.1로 올림(`mod.hjson`).
 
 ### 블룸 — 새로 만들지 않음, **기본 설정으로 세기 조절 됨 (소스 + 실측)**
 
