@@ -527,6 +527,12 @@ java tools\HeightGen.java preview heightmaps\silicon-smelter.png heightmaps\sili
   - 낮은 블록이 옆의 더 높은 블록에 가려지는 것은 계산하지 않음(윗면은 항상 받음).
   - 프레임 수는 따로 재지 않음(공중 빛은 가림 계산이 더 일찍 끝남). 움직이는 유닛 여러 대, 이착륙 중의 높이 변화는 찍지 않음.
 
+### GitHub 공개와 게임에서 가져오기 (2026-11-16)
+
+- 저장소: https://github.com/redeagle0705/Shinny-Dustry (GPL-3.0). 시험 프로필, 빌드 결과물, 스크린샷, 컴퓨터별 경로(`tools\local.ps1`)는 올리지 않음.
+- **주소로 직접 가져오기** (`ModsDialog.java:623-675`): 게임은 저장소의 주 언어가 Java(또는 Kotlin, Groovy, Scala)면 Java 모드로 보고 최신 릴리스의 `.jar`를 받아 설치함. 이 저장소는 GitHub가 주 언어를 Java로 잡고, 릴리스 v0.1.0에 `mshaders.jar`가 붙어 있음. 게임에서 실제로 받아 보는 시험은 하지 않음.
+- **모드 브라우저 목록** (Anuken/MindustryMods의 README와 `ModUpdater.java`): `mindustry-mod` 토픽, 저장소 맨 위나 `assets/`의 `mod.hjson`/`mod.json`, Java 모드는 `minGameVersion` 154 이상과 jar가 붙은 릴리스가 필요. 2시간마다 갱신. 그래서 `mod\mod.hjson`을 저장소 맨 위 `mod.hjson`으로 옮기고 `build.ps1`이 거기서 읽게 함(jar 안의 내용은 전과 같음). 토픽은 저장소 주인이 GitHub에서 넣어야 함.
+
 ### 블룸 — 새로 만들지 않음, **기본 설정으로 세기 조절 됨 (소스 + 실측)**
 
 - 기본 게임이 매 프레임 설정을 읽음: `bloom.setBloomIntensity(settings.getInt("bloomintensity", 6) / 4f + 1f)`, `bloom.blurPasses = settings.getInt("bloomblur", 1)` (`core/Renderer.java:391-397`).
@@ -560,7 +566,7 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1
 powershell -ExecutionPolicy Bypass -File tools\run-test.ps1 -Mods mshaders
 ```
 
-- `build.ps1`: `javac --release 17 -cp <V4>\vendor\v160.7\Mindustry.jar`로 컴파일하고 `mod.hjson`·`shaders/`·`bundles/`와 함께 jar로 묶습니다.
+- `build.ps1`: `javac --release 17 -cp Mindustry.jar`로 컴파일하고 `mod.hjson`·`shaders/`·`bundles/`와 함께 jar로 묶습니다.
 - `run-test.ps1`: 공식 jar를 별도 데이터 폴더 `profile\appdata\Mindustry`로 띄웁니다. `-Shots`를 주면 시험용 모드(`testkit\`, `build\mshaders-testkit.jar`)가 맵을 열고 스크린샷을 찍은 뒤 스스로 끝냅니다. `-Shots` 없이 띄우면 직접 플레이해 볼 수 있습니다(끄는 것도 직접).
 - 별도 데이터 폴더 지정 근거: `-Dmindustry.data.dir`(`ClientLauncher.java:42-45`). 다만 `DesktopLauncher.main()`이 그 전에 `%APPDATA%\Mindustry\last_log.txt`를 열기 때문에(`desktop/src/mindustry/desktop/DesktopLauncher.java:48`) `APPDATA` 환경 변수도 같이 프로필 폴더로 바꿉니다. 창 크기는 `-maximized false -width -height` 인자(`DesktopLauncher.java:77-78, 95`).
 - `deploy.ps1`(2026-11-16, 제작자가 허락): 빌드한 jar를 풀어 제작자의 Steam 게임 모드 폴더 `...\steamapps\common\Mindustry\saves\mods\mshaders`를 최신 빌드와 똑같이 맞춥니다(게임은 풀어 놓은 폴더도 jar처럼 읽음). **그 폴더 하나만** 건드리고, 이름이 `mshaders`이고 `mods` 안에 있으며 이 모드가 들어 있을 때만 동작합니다. 빌드에 없는 파일은 그 폴더에서 지워지므로, 직접 그린 노멀맵은 모드 폴더 밖 `...\Mindustry\saves\mshaders-normals\`에, 블록 높이 표는 `...\Mindustry\saves\mshaders-heights.properties`에 둡니다(Steam판의 데이터 폴더는 `saves`). 게임을 켜거나 끄지 않으며, 게임을 다시 시작해야 반영됩니다. Steam 폴더의 다른 곳과 다른 모드는 여전히 건드리지 않습니다.

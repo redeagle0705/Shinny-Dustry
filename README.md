@@ -12,6 +12,10 @@ A visual-effects-only Java mod for Mindustry: water, reflections, directional sh
 
 ## 설치
 
+게임 안에서 바로 받기: **모드 → 모드 가져오기 → GitHub에서 모드 가져오기**에 `redeagle0705/Shinny-Dustry`를 넣고 게임을 다시 시작합니다.
+
+파일로 받기:
+
 1. 이 저장소의 **Releases**에서 `mshaders.jar`를 받습니다.
 2. 게임에서 **모드 → 모드 가져오기 → 파일 가져오기**로 그 파일을 고릅니다.
 3. 게임을 다시 시작합니다.
@@ -79,6 +83,7 @@ powershell -ExecutionPolicy Bypass -File tools\build.ps1
 
 | 폴더 | 내용 |
 |---|---|
+| `mod.hjson` | 모드 정보(이름, 만든이, 버전). 게임의 모드 브라우저 목록이 저장소 맨 위에서 찾기 때문에 여기에 둠 |
 | `mod/` | 모드 본체: `src/`(Java), `assets/`(셰이더, 그림, 번역) |
 | `testkit/` | 시험 화면을 차리고 스크린샷을 찍는 도우미 모드(시험용) |
 | `tools/` | 빌드·시험 스크립트, 높이맵·팔레트 생성 도구 |
