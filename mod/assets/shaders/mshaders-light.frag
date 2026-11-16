@@ -49,6 +49,9 @@ const float UNIT_SOFT = 1.5;    // world units over which the bottom and the top
 const float WIDEST = 32.0;      // world units (UnitShades.widest): alpha of the picture = width of the thing / this
 const float LIGHT_SIZE = 5.0;   // world units: how large a light is taken to be - it smears the shadow of thin things
 const float UNIT_LAMP = 6.0;    // world units: how high a light on the ground is taken to be when units are in its way
+const float LIFTED = 4.0;       // world units: a thing whose underside is higher than this is carried above the ground
+const float OVER = 2.5;         // for such a thing a light on the ground counts as this many times as high as its top
+const float BODY = 0.9;         // cover above this is a body (legs are drawn with less, UnitShades.legCover)
 
 // How tall the block on that tile is, in tiles (Occluders.java keeps it in blue); one tile where only the game's mask is there.
 float tallOn(vec2 cell){
@@ -176,10 +179,11 @@ float reach(vec2 from, vec2 to, float lamp){
 // the units says stands there (from its bottom to its top)? So a body throws a shadow as long as it is tall against
 // the height of the light, the shadow of an arching leg lies apart from the leg, and light passes under what is
 // carried or flies. Only the stretch of the line on which the ray is still below the tallest unit is walked.
+// "air": 1 for a light that hangs in the air (the glow of a flying unit), whose height is taken as it is.
 // "clear": the radius of the unit the light itself sits on - that unit is not in the way of its own light.
 // "jitter": 0..1, different for every pixel, shifts the steps so that their spacing shows as grain (which the blur
 // after this pass smooths) rather than as bands.
-float unitsOpen(vec2 from, vec2 to, float len, float low, float high, float clear, float jitter){
+float unitsOpen(vec2 from, vec2 to, float len, float low, float high, float air, float clear, float jitter){
     if(len < 1.0 || high <= low) return 1.0;
     float last = min((u_unitTop + UNIT_SOFT - low) / (high - low), 1.0 - clear / len);
     if(last <= 0.0) return 1.0;
@@ -193,8 +197,15 @@ float unitsOpen(vec2 from, vec2 to, float len, float low, float high, float clea
         if(uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) continue;
         vec4 m = texture2D(u_unitMask, uv);
         if(m.b > 0.02){
-            float ray = low + (high - low) * t;
             float bottom = (1.0 - m.r / m.b) * CEILING, top = m.g / m.b * CEILING;
+            // What is carried above the ground - the body and the upper legs of a walker, a unit that flies - is
+            // higher than a light on the ground is taken to be, and would throw no shadow at all. For those the light
+            // counts as hanging OVER times as high as their top: the shadow then falls on the ground some way behind
+            // them, apart from them, the further the further they are from the light - the way the shadow of
+            // something in the air lies beside it. (Not for lights that really hang in the air: those keep their height.)
+            // Bodies only (cover above BODY): the legs of a walker, treated so, drew thin dark lines all around it.
+            float lamp = air < 0.5 && bottom > LIFTED && m.b > BODY ? max(high, top * OVER) : high;
+            float ray = low + (lamp - low) * t;
             float hit = smoothstep(bottom - UNIT_SOFT, bottom, ray) * (1.0 - smoothstep(top, top + UNIT_SOFT, ray));
             // A light has a size, so the shadow of a thing is smeared the wider the further the point is behind it
             // compared with how far the thing is from the light: by (size of the light) * t / (1 - t). A thing
@@ -231,7 +242,8 @@ void main(){
         // A light that hangs "high" world units up (the glow of a flying unit): what counts is how much further away
         // it is than from the spot right under it. Under the unit that changes little with every step - a wide, even
         // pool instead of a hot spot - and the pool reaches further out; spread over more ground, it is fainter.
-        float high = u_colors[i].a >= 1000.0 ? u_colors[i].a - 1000.0 : 0.0;
+        // u_colors a: 1000 + height + 100 * (radius of the unit the light hangs on, whole units) - Scene.pickLights
+        float high = u_colors[i].a >= 1000.0 ? mod(u_colors[i].a - 1000.0, 100.0) : 0.0;
         if(high > 0.0){
             float slant = sqrt(along * along + high * high);
             dist = slant - high;
@@ -243,10 +255,12 @@ void main(){
 
         // below zero: the light sits on a unit of that radius (Scene.pickLights) - nothing to do with blocks
         float code = u_colors[i].a;
-        float open = reach(world, l.xy, max(code, 0.0));
+        float open = reach(world, l.xy, code >= 1000.0 ? 1000.0 + high : max(code, 0.0));
+        // the unit the light sits on or hangs under is not in the way of its own light: its radius
+        float own = code >= 1000.0 ? floor((code - 1000.0) / 100.0) : (code < 0.0 ? -code : 0.0);
         // A light that does not hang in the air is taken to sit low, UNIT_LAMP up: a unit on the ground then shades all
         // the way behind it, and the light of a lamp a walker stands over gets out under its body, between its legs.
-        if(u_unitsOn > 0.5 && open > 0.01) open *= mix(1.0, unitsOpen(world, l.xy, along, standing, high > 0.0 ? high : UNIT_LAMP, code < 0.0 ? -code : 0.0, jitter), u_unitDepth);
+        if(u_unitsOn > 0.5 && open > 0.01) open *= mix(1.0, unitsOpen(world, l.xy, along, standing, high > 0.0 ? high : UNIT_LAMP, high > 0.0 ? 1.0 : 0.0, own, jitter), u_unitDepth);
         vec3 c = u_colors[i].rgb;
         if(u_mode == 3){
             // full inside the lit circle, fading out to WIDE radii; weak lights count less; behind a block it is

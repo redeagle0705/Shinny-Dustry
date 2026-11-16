@@ -50,6 +50,7 @@ import java.lang.reflect.*;
  *   beam=true      a still glowing beam over the water (shore scene)
  *   laser=true     the continuous laser of the vela, held in place across the middle of the view
  *   crowd=a+b      one unit of each of those kinds held in a row just below the first test lamp; the camera moves there
+ *   enemy=name     a unit of the other team held to the right of that row, so the row shoots at it (nothing held dies)
  *   flash=true     a still muzzle flash next to the spawned unit
  *   many=N         N weak lights of equal strength over the view (a busy base)
  *   illuminator=true  a real Illuminator block with power (blocks scene)   tick=N  set the game clock
@@ -58,6 +59,7 @@ import java.lang.reflect.*;
  *   fps=true       report the frame rate of the shot (vsync and the fps cap are switched off in the test profile)
  *   sprites=a+b    save atlas sprites enlarged and report where their light and dark pixels are
  *   turretlist=true  report every turret-like block with the sprites it is put together from (base, body, parts; effects apart)
+ *   weaponlist=true  report every unit with its weapons: the colours of each shot and the colour of its light (run without the shader mod)
  * Facts about the shaders go to <folder>/report.txt.
  */
 public class TestKit extends Mod{
@@ -140,7 +142,10 @@ public class TestKit extends Mod{
                 if(holdTime >= 0f) Time.time = holdTime;
                 if(holdSide) holdItemsAtDrill();
                 for(int c = 0; c < crowd.size; c++){
-                    if(crowd.get(c).isValid()) crowd.get(c).set(crowdAt.get(c * 2), crowdAt.get(c * 2 + 1));
+                    if(crowd.get(c).isValid()){
+                        crowd.get(c).set(crowdAt.get(c * 2), crowdAt.get(c * 2 + 1));
+                        crowd.get(c).health = crowd.get(c).maxHealth;
+                    }
                 }
                 if(pinAt != null && lastUnit != null && lastUnit.isValid()){
                     lastUnit.set(pinAt[0], pinAt[1]);
@@ -337,9 +342,19 @@ public class TestKit extends Mod{
                 }
                 case "crowdbelow" -> crowdBelow = Float.parseFloat(v);
                 case "crowd" -> spawnCrowd(v);
+                case "enemy" -> {
+                    // enemy=name: a unit of the other team held to the right of the row, for the row to shoot at; nothing in the row dies
+                    var foe = Vars.content.unit(v);
+                    if(foe != null && lampPos != null){
+                        float ex = lampPos[0] + 64f, ey = lampPos[1] - crowdBelow;
+                        crowd.add(foe.spawn(Team.crux, ex, ey));
+                        crowdAt.add(ex, ey);
+                    }
+                }
                 case "pin" -> pinAt = new float[]{(baseX + Float.parseFloat(v.split(":")[0]) + 0.5f) * Vars.tilesize, (baseY + Float.parseFloat(v.split(":")[1]) + 0.5f) * Vars.tilesize};
                 case "sprites" -> dumpSprites(v);
                 case "turretlist" -> listTurrets();
+                case "weaponlist" -> listWeapons();
                 case "zoom" -> {
                     // closer than the game lets a player go (for looking at single pixels of a sprite)
                     if(Integer.parseInt(v) > Vars.renderer.maxZoomInGame) Vars.renderer.maxZoom = Vars.renderer.maxZoomInGame = Integer.parseInt(v);
@@ -1098,6 +1113,59 @@ public class TestKit extends Mod{
         camX = lampPos[0];
         camY = lampPos[1] - crowdBelow * 0.7f;
         line("  crowd of " + crowd.size + " below the lamp at " + lampPos[0] + "," + lampPos[1]);
+    }
+
+    /**
+     * weaponlist=true: every unit of the game with its weapons, and for each what colour the shot is drawn in and what
+     * colour the game gives its light - to find the ones where the two do not go together. To be run without the shader
+     * mod (it gives the bullet types Color objects of their own, and "default" is told here by the object).
+     */
+    void listWeapons(){
+        for(mindustry.type.UnitType type : Vars.content.units()){
+            if(type.internal || type.minfo.mod != null) continue;
+            line("unit " + type.name + (type.weapons.size == 0 ? " (no weapons)" : ""));
+            for(mindustry.type.Weapon weapon : type.weapons){
+                String extra = weapon instanceof mindustry.type.weapons.RepairBeamWeapon r ? " beam=" + hex(r.laserColor)
+                    : weapon instanceof mindustry.type.weapons.PointDefenseWeapon p ? " beam=" + hex(p.color) : "";
+                line("  weapon " + kind(weapon) + " " + weapon.name + extra);
+                bulletLine(weapon.bullet, 2);
+            }
+        }
+    }
+
+    void bulletLine(mindustry.entities.bullet.BulletType b, int depth){
+        if(b == null || depth > 4) return;
+        String own = b instanceof mindustry.entities.bullet.ContinuousLaserBulletType l ? "colors=" + hexes(l.colors)
+            : b instanceof mindustry.entities.bullet.ContinuousFlameBulletType f ? "colors=" + hexes(f.colors)
+            : b instanceof mindustry.entities.bullet.LaserBulletType l ? "colors=" + hexes(l.colors) + " (its light takes colors[0])"
+            : b instanceof mindustry.entities.bullet.ShrapnelBulletType s ? "from=" + hex(s.fromColor) + " to=" + hex(s.toColor)
+            : b instanceof mindustry.entities.bullet.SapBulletType s ? "color=" + hex(s.color) + " (drawn with Drawf.laser)"
+            : b instanceof mindustry.entities.bullet.PointLaserBulletType p ? "color=" + hex(p.color)
+            : b instanceof mindustry.entities.bullet.LightningBulletType ? "lightning=" + hex(b.lightningColor)
+            : b instanceof mindustry.entities.bullet.LiquidBulletType q ? "liquid=" + (q.liquid == null ? "-" : q.liquid.name)
+            : b instanceof mindustry.entities.bullet.BasicBulletType a ? "back=" + hex(a.backColor) + " front=" + hex(a.frontColor)
+            : "hit=" + hex(b.hitColor) + " trail=" + hex(b.trailColor);
+        String given = b.lightColor == mindustry.graphics.Pal.powerLight ? "DEFAULT-yellow" : b.lightColor == Color.orange ? "DEFAULT-orange" : b.lightColor == Color.white ? "DEFAULT-white" : "set";
+        line("  ".repeat(depth) + "bullet " + kind(b) + " light=" + hex(b.lightColor) + " " + given + " r=" + (int)b.lightRadius + " a=" + b.lightOpacity + " | " + own
+            + (b.spawnUnit != null ? " spawns=" + b.spawnUnit.name : ""));
+        if(b.fragBullet != null && b.fragBullet != b) bulletLine(b.fragBullet, depth + 1);
+        if(b.intervalBullet != null && b.intervalBullet != b) bulletLine(b.intervalBullet, depth + 1);
+    }
+
+    static String kind(Object o){
+        Class<?> c = o.getClass();
+        while(c.isAnonymousClass()) c = c.getSuperclass();
+        return c.getSimpleName();
+    }
+
+    static String hex(Color c){
+        return c == null ? "-" : "#" + c.toString();
+    }
+
+    static String hexes(Color[] colors){
+        StringBuilder sb = new StringBuilder();
+        for(Color c : colors) sb.append(hex(c)).append(' ');
+        return sb.toString().trim();
     }
 
     void line(String s){

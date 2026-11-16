@@ -42,6 +42,12 @@ public class UnitShades{
     public static final float ceiling = 96f;
     /** The greatest width of a thing the picture can hold, in world units; WIDEST in mshaders-light.frag. */
     public static final float widest = 32f;
+    /**
+     * How much of a pixel a leg covers, against 1 for a body or a foot. Everything in the picture is multiplied by its
+     * cover, so a leg just takes a little less light away - and the light pass knows a carried body (cover above 0.9)
+     * from a leg: only bodies get the shadow that lies apart from them (BODY in mshaders-light.frag).
+     */
+    private static final float legCover = 0.8f;
     /** How far above the height its glow hangs at a flying unit begins, and how thick it is. */
     private static final float flyGap = 3f, flyThick = 6f;
 
@@ -145,7 +151,7 @@ public class UnitShades{
     }
 
     /** How far off the ground the body of a unit on legs is carried. */
-    private static float lift(UnitType type, float hit){
+    static float lift(UnitType type, float hit){
         return Mathf.clamp(type.legLength * 0.15f, 2f, Math.max(hit * 0.6f, 2f));
     }
 
@@ -170,8 +176,9 @@ public class UnitShades{
         float dx = x2 - x1, dy = y2 - y1, len = Mathf.len(dx, dy);
         if(len < 0.01f) return;
         float nx = -dy / len * half, ny = dx / len * half, flat = Math.min(half, 2.5f);
-        float c1 = Color.toFloatBits(1f - Mathf.clamp((z1 - flat) / ceiling), Mathf.clamp((z1 + flat) / ceiling), 1f, Mathf.clamp(half * 2f / widest));
-        float c2 = Color.toFloatBits(1f - Mathf.clamp((z2 - flat) / ceiling), Mathf.clamp((z2 + flat) / ceiling), 1f, Mathf.clamp(half * 2f / widest));
+        // legs cover a little less than bodies do (legCover): that is how the light pass tells the two apart
+        float c1 = Color.toFloatBits((1f - Mathf.clamp((z1 - flat) / ceiling)) * legCover, Mathf.clamp((z1 + flat) / ceiling) * legCover, legCover, Mathf.clamp(half * 2f / widest) * legCover);
+        float c2 = Color.toFloatBits((1f - Mathf.clamp((z2 - flat) / ceiling)) * legCover, Mathf.clamp((z2 + flat) / ceiling) * legCover, legCover, Mathf.clamp(half * 2f / widest) * legCover);
         Fill.quad(x1 + nx, y1 + ny, c1, x1 - nx, y1 - ny, c1, x2 - nx, y2 - ny, c2, x2 + nx, y2 + ny, c2);
         top = Math.max(top, Math.min(Math.max(z1, z2) + flat, ceiling));
         drawn++;

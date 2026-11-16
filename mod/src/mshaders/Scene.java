@@ -878,7 +878,8 @@ public class Scene{
                 lightColors[k + 1] = d[o + 4];
                 lightColors[k + 2] = d[o + 5];
                 // what the light sits in; for the glow of a flying unit, how high it hangs instead (1000 + world units)
-                float code = d[o + 7] > 0f ? 1000f + d[o + 7] : lampCode(d[o], d[o + 1]);
+                // a light in the air: 1000 + its height (below 100) + 100 * the radius of the unit it hangs on (whole units)
+                float code = d[o + 7] > 0f ? 1000f + Math.min(d[o + 7], 99f) + 100f * Math.min((float)Math.floor(tap.unitRadiusAt(d[o], d[o + 1])), 80f) : lampCode(d[o], d[o + 1]);
                 // a light that sits on a unit: minus the radius of that unit, which then is not in the way of its own light (mshaders-light.frag, unitsOpen)
                 if(code == 0f) code = -tap.unitRadiusAt(d[o], d[o + 1]);
                 lightColors[k + 3] = code;

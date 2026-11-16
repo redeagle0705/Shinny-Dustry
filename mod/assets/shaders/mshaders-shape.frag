@@ -115,7 +115,8 @@ void main(){
         float dist = length(d), strength = l.w;
         // the glow of a flying unit hangs "high" world units up (u_colors a = 1000 + height): a wider, evener, fainter
         // pool, as in mshaders-light.frag, and it falls on the block more from above
-        float high = u_colors[i].a >= 1000.0 ? u_colors[i].a - 1000.0 : 0.0;
+        // u_colors a: 1000 + height + 100 * (radius of the unit the light hangs on, whole units) - Scene.pickLights
+        float high = u_colors[i].a >= 1000.0 ? mod(u_colors[i].a - 1000.0, 100.0) : 0.0;
         if(high > 0.0){
             dist = sqrt(dist * dist + high * high) - high;
             strength *= l.z / (l.z + high);

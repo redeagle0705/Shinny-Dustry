@@ -129,7 +129,11 @@ public class LightTap extends LightRenderer{
         unitsAt.clear();
         unitRadii.clear();
         for(Unit unit : Groups.unit){
-            unitsAt.put(place(unit.x, unit.y), unit.isFlying() ? Mathf.clamp(unit.elevation) : 0f);
+            // A unit on legs carries its body - and the glow under it - off the ground: a little below the body (UnitShades.lift),
+            // as a share of the height a unit in full flight hangs at.
+            float up = unit instanceof Legsc legged && legged.legs().length > 0 ? Math.max(UnitShades.lift(unit.type, unit.hitSize) - 3f, 1f) / Scene.airLevel
+                : unit.isFlying() ? Mathf.clamp(unit.elevation) : 0f;
+            unitsAt.put(place(unit.x, unit.y), up);
             unitRadii.put(place(unit.x, unit.y), unit.hitSize * 0.5f);
         }
     }
@@ -190,7 +194,7 @@ public class LightTap extends LightRenderer{
      * colour of a light is seen: on the ground, and on the faces of normal-mapped blocks.
      *
      * For every kind of shot whose light colour is one of those fixed ones and whose own colour is clearly another
-     * (more than 40 degrees of hue away, or the light is white and the shot is not): the type gets a Color object of
+     * (more than 25 degrees of hue away, or the light is white and the shot is not): the type gets a Color object of
      * its own with the same value - so the game itself draws exactly what it drew - and while the mod is listening,
      * a light reported with that object is given the shot's colour instead (ownColor).
      * @return how many kinds of shots were matched
@@ -203,6 +207,7 @@ public class LightTap extends LightRenderer{
             if(given != Pal.powerLight && given != Color.orange && given != Color.white) continue;
             Color own = type instanceof ContinuousLaserBulletType l && l.colors.length > 0 ? l.colors[Math.max(l.colors.length - 2, 0)]
                 : type instanceof ContinuousFlameBulletType f && f.colors.length > 0 ? f.colors[Math.max(f.colors.length - 2, 0)]
+                : type instanceof LightningBulletType ? type.lightningColor
                 : type instanceof BasicBulletType b ? b.backColor : null;
             if(own == null || !differs(given, own)) continue;
             Color key = given.cpy();
@@ -219,7 +224,7 @@ public class LightTap extends LightRenderer{
         if(shotHue < 0f) return false;   // a white or grey shot: any light will do
         if(lightHue < 0f) return true;
         float apart = Math.abs(shotHue - lightHue);
-        return Math.min(apart, 360f - apart) > 40f;
+        return Math.min(apart, 360f - apart) > 25f;
     }
 
     /** Hue in degrees, or -1 for a colour with (almost) none. */
@@ -228,6 +233,19 @@ public class LightTap extends LightRenderer{
         if(max <= 0f || d / max < 0.25f) return -1f;
         float h = max == c.r ? (c.g - c.b) / d : max == c.g ? (c.b - c.r) / d + 2f : (c.r - c.g) / d + 4f;
         return (h * 60f + 360f) % 360f;
+    }
+
+    /** Colours lasers are drawn in, as objects that stay as they are (a light keeps the object it was reported with until it is drawn). */
+    private final IntMap<Color> laserColors = new IntMap<>();
+
+    /** The colour the sprite batch is drawing with right now, in 32 steps per channel; "else" if that is next to black. */
+    private Color drawnColor(Color otherwise){
+        Color now = Draw.getColor();
+        if(Math.max(now.r, Math.max(now.g, now.b)) < 0.15f) return otherwise;
+        int key = (int)(Mathf.clamp(now.r) * 31f + 0.5f) << 10 | (int)(Mathf.clamp(now.g) * 31f + 0.5f) << 5 | (int)(Mathf.clamp(now.b) * 31f + 0.5f);
+        Color kept = laserColors.get(key);
+        if(kept == null) laserColors.put(key, kept = new Color((key >> 10) / 31f, (key >> 5 & 31) / 31f, (key & 31) / 31f, 1f));
+        return kept;
     }
 
     /** The colour a light reported with that Color object is given while the mod is listening: the shot's own (matchShots), else the same. */
@@ -268,6 +286,10 @@ public class LightTap extends LightRenderer{
     @Override
     public void line(float x, float y, float x2, float y2, float stroke, Color tint, float alpha){
         tint = ownColor(tint);
+        // The light of a laser sprite (Drawf.laser: sap lasers, repair and mining beams, tractor beams, the lines between
+        // power nodes) is always the same: 30 wide, orange, 0.3 (Drawf.light(x, y, x2, y2)) - whatever colour the laser is
+        // drawn in. That colour is still set while the light is reported: the light takes it.
+        if(capture && tint == Color.orange && stroke == 30f && alpha == 0.3f) tint = drawnColor(tint);
         // beam light. Without the lighting rule it is recorded as a few circles along the beam; with it, the game's own
         // drawing below is used (it ends up in add(Runnable)).
         if(moving != 1f){
