@@ -54,6 +54,11 @@ import java.lang.reflect.*;
  *   crowd=a+b      one unit of each of those kinds held in a row just below the first test lamp; the camera moves there
  *   enemy=name     a unit of the other team held to the right of that row, so the row shoots at it (nothing held dies); enemyright=N: that far right of the lamp (before enemy=; 0 = under the middle of the row)
  *   heldshot=F     a shot of the first unit of that row held at the first test lamp, with the share F of its time used up (0 = just fired .. 1)
+ *   face=N         hold the units of that row turned to N degrees (0 = right, 90 = up)      facestep=M  each one M degrees further than the one before
+ *   stride=N       hold the two-legged units of that row at the point N of their walk (0 .. 4 strides), so their legs show
+ *   unitkit=a+b    for those units: report the sprites each is put together from (body, legs, treads, weapons, with sizes and
+ *                  places) and save each sprite pixel for pixel as <sprite>.png, plus a flat normal map of its shape to
+ *                  start drawing from as <sprite>-flat.png (run without the shader mod)
  *   flash=true     a still muzzle flash next to the spawned unit
  *   boom=true      the explosion effect of a thorium reactor next to the first test lamp (after blocks=true); nothing is destroyed
  *   many=N         N weak lights of equal strength over the view (a busy base)
@@ -87,6 +92,10 @@ public class TestKit extends Mod{
     /** crowd=a+b: units held in a row just below the first test lamp, and where each is held. */
     final Seq<mindustry.gen.Unit> crowd = new Seq<>();
     final FloatSeq crowdAt = new FloatSeq();
+    /** face=N: the direction the units of the row are held turned to (NaN = left alone); facestep=M: each one that much further. */
+    float face = Float.NaN, faceStep;
+    /** stride=N: where in their walk the two-legged units of the row are held (NaN = left alone). */
+    float stride = Float.NaN;
     /** How far below the lamp the row is, world units (crowdbelow=N, before crowd=). */
     float crowdBelow = 34f;
     /** How far to the right of the lamp the unit of the other team is held, world units (enemyright=N, before enemy=). */
@@ -154,6 +163,11 @@ public class TestKit extends Mod{
                     if(crowd.get(c).isValid()){
                         crowd.get(c).set(crowdAt.get(c * 2), crowdAt.get(c * 2 + 1));
                         crowd.get(c).health = crowd.get(c).maxHealth;
+                        if(!Float.isNaN(face)){
+                            crowd.get(c).rotation = face + c * faceStep;
+                            if(crowd.get(c) instanceof mindustry.gen.Mechc mech) mech.baseRotation(face + c * faceStep);
+                        }
+                        if(!Float.isNaN(stride) && crowd.get(c) instanceof mindustry.gen.Mechc mech) mech.walkTime(stride * crowd.get(c).type.mechStride);
                     }
                 }
                 if(pinAt != null && lastUnit != null && lastUnit.isValid()){
@@ -358,6 +372,10 @@ public class TestKit extends Mod{
                 case "crowdbelow" -> crowdBelow = Float.parseFloat(v);
                 case "enemyright" -> enemyRight = Float.parseFloat(v);
                 case "crowd" -> spawnCrowd(v);
+                case "face" -> face = Float.parseFloat(v);
+                case "facestep" -> faceStep = Float.parseFloat(v);
+                case "stride" -> stride = Float.parseFloat(v);
+                case "unitkit" -> unitKit(v);
                 case "heldshot" -> heldShot = Float.parseFloat(v);
                 case "enemy" -> {
                     // enemy=name: a unit of the other team held to the right of the row, for the row to shoot at; nothing in the row dies
@@ -1174,6 +1192,60 @@ public class TestKit extends Mod{
 
     static String reg(TextureRegion r){
         return r instanceof TextureAtlas.AtlasRegion a && r.found() && a.name != null ? a.name + "(" + r.width + "x" + r.height + ")" : "-";
+    }
+
+    /**
+     * unitkit=a+b: what there is to draw for those units. For each: the sprites the game puts it together from and
+     * where; each sprite saved pixel for pixel, and its shape filled with the colour of a flat face (128, 128, 255) as
+     * something to start a normal map from.
+     */
+    void unitKit(String names){
+        ObjectSet<String> saved = new ObjectSet<>();
+        for(String name : names.split("[+]")){
+            var type = Vars.content.unit(name);
+            if(type == null){
+                line("  no such unit: " + name);
+                continue;
+            }
+            var sample = type.constructor.get();
+            String kind = sample instanceof mindustry.gen.Mechc ? "walks on two legs" : sample instanceof mindustry.gen.Legsc ? "walks on many legs"
+                : sample instanceof mindustry.gen.Tankc ? "tank" : type.flying ? "flies" : type.naval ? "ship" : "other";
+            line("unit " + type.name + " (" + kind + ", hit size " + type.hitSize + ")");
+            line("  body " + reg(type.region) + "  cell " + reg(type.cellRegion) + "  outline " + reg(type.outlineRegion));
+            if(sample instanceof mindustry.gen.Mechc) line("  leg " + reg(type.legRegion) + "  hip " + reg(type.baseRegion));
+            if(sample instanceof mindustry.gen.Tankc) line("  treads " + reg(type.treadRegion));
+            Seq<String> sprites = Seq.with(type.name);
+            if(sample instanceof mindustry.gen.Mechc) sprites.add(type.name + "-leg", type.name + "-base");
+            if(sample instanceof mindustry.gen.Tankc) sprites.add(type.name + "-treads");
+            for(var weapon : type.weapons){
+                line("  weapon " + reg(weapon.region) + " at " + weapon.x + "," + weapon.y + (weapon.flipSprite ? " (flipped)" : "") + (weapon.rotate ? " turns" : "")
+                    + (weapon.layerOffset != 0f ? " layer " + weapon.layerOffset : "") + (weapon.parts.size > 0 ? " parts " + weapon.parts.size : ""));
+                if(weapon.region.found() && !sprites.contains(weapon.name)) sprites.add(weapon.name);
+            }
+            for(String sprite : sprites){
+                if(!saved.add(sprite)) continue;
+                try{
+                    var region = Core.atlas.find(sprite);
+                    if(!region.found()){
+                        line("  sprite " + sprite + ": not in atlas");
+                        continue;
+                    }
+                    Pixmap p = Core.atlas.getPixmap(region).crop();
+                    PixmapIO.writePng(new Fi(outDir).child(sprite + ".png"), p);
+                    Pixmap flat = new Pixmap(p.width, p.height);
+                    for(int x = 0; x < p.width; x++){
+                        for(int y = 0; y < p.height; y++){
+                            if((p.get(x, y) & 0xff) >= 128) flat.set(x, y, 0x8080ffff);
+                        }
+                    }
+                    PixmapIO.writePng(new Fi(outDir).child(sprite + "-flat.png"), flat);
+                    flat.dispose();
+                    p.dispose();
+                }catch(Throwable t){
+                    line("  sprite " + sprite + ": " + t);
+                }
+            }
+        }
     }
 
     /** crowd=a+b+c: one unit of each of those kinds in a row just below the first test lamp (after blocks=true and the like), held there; the camera moves to them. */

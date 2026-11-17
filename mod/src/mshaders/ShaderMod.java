@@ -21,7 +21,7 @@ public class ShaderMod extends Mod{
     // found, not listed: the slider appears once a thorium reactor has blown up in view (LightTap.reactorBoost)
     reactorFun = "mshaders-reactor-fun", reactorFound = "mshaders-reactor-found",
     glintOn = "mshaders-glint", glintStrength = "mshaders-glint-strength", glintBand = "mshaders-glint-band",
-    normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsHeight = "mshaders-normals-height",
+    normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsHeight = "mshaders-normals-height", normalsOwnLight = "mshaders-normals-own-light",
     postOn = "mshaders-post", vignette = "mshaders-vignette", saturation = "mshaders-saturation", contrast = "mshaders-contrast", warmth = "mshaders-warmth";
 
     public final WaterFx water = new WaterFx();
@@ -43,7 +43,7 @@ public class ShaderMod extends Mod{
             shadowOn, true, shadowLength, 15, shadowStrength, 70, shadowCycle, 4, shadowQuality, 80, sunAngle, 45,
             lightsOn, true, lightsStrength, 100, darkDepth, 50, lightsColor, 100, lightsMoving, 100, lightsMax, 64, lightsAir, 100, lightsGround, 100, lightsUnits, true, lightsUnitsDepth, 65,
             glintOn, true, glintStrength, 100, glintBand, 100,
-            normalsOn, true, normalsStrength, 100, normalsHeight, true,
+            normalsOn, true, normalsStrength, 100, normalsHeight, true, normalsOwnLight, false,
             postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15
         );
 
@@ -108,6 +108,7 @@ public class ShaderMod extends Mod{
             f.check(normalsOn, true);
             f.slider(normalsStrength, 100, 0, 200, 5, i -> i + "%");
             f.check(normalsHeight, true);
+            f.check(normalsOwnLight, false);
 
             f.section("post");
             f.check(postOn, true);

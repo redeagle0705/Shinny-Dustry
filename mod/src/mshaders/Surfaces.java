@@ -6,12 +6,16 @@ import arc.graphics.*;
 import arc.graphics.Texture.*;
 import arc.graphics.g2d.*;
 import arc.math.*;
+import arc.math.geom.Rect;
 import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
 import mindustry.entities.part.*;
+import mindustry.entities.units.WeaponMount;
 import mindustry.gen.*;
 import mindustry.graphics.*;
+import mindustry.type.UnitType;
+import mindustry.type.Weapon;
 import mindustry.world.*;
 import mindustry.world.blocks.defense.*;
 import mindustry.world.blocks.defense.turrets.*;
@@ -49,6 +53,11 @@ import mindustry.world.draw.*;
  * Files, by sprite name (the name the game's own sprite has):
  *   normal maps:  mshaders-normals/<sprite>.png  in the game's data folder, then  normals/<sprite>.png  in the mod;
  *   height maps:  mshaders-heightmaps/<sprite>.png  in the data folder, then  heightmaps/<sprite>.png  in the mod.
+ *   gloss maps:   mshaders-gloss/<sprite>.png  in the data folder, then  gloss/<sprite>.png  in the mod - a picture
+ *                 that says how glossy each pixel of that sprite is: black = matt, mid grey = half polished,
+ *                 white = polished metal. Where it is transparent, and for a sprite without one, the
+ *                 pixel is as glossy as the block is as a whole (Gloss.java: what it is built from). It goes along
+ *                 with the sprite's normal or height map and does nothing without one.
  * (The data folder comes first so a picture can be tried without rebuilding the mod.)
  * Sprite names: the block's name for its base; for a drill also <name>-rotator and <name>-top; for a mass driver
  * <name>-base for the base and <name> for the head; for a turret (also repair point, build tower, tractor beam, point
@@ -57,6 +66,20 @@ import mindustry.world.draw.*;
  * <name>-<shape 0..6>-<frame 0..3>, or <name>-<shape> for a picture that serves all four frames. A frame without a
  * picture of its own uses the nearest frame of that shape that has one, so the shading does not blink while the belt runs.
  * Where a sprite has both kinds of map, the setting "prefer height maps" picks.
+ *
+ * UNITS have maps the same way, in the same folders, by the names of their sprites:
+ *   <unit>            its body (the sprite points up; the game turns it to where the unit looks);
+ *   <weapon>          each of its weapons, by the weapon's own sprite name - "large-weapon" serves every unit that
+ *                     carries that weapon. The game draws one sprite for both sides, flipped on one of them;
+ *   <unit>-leg, <unit>-base   for a unit that walks on two legs: the leg (one sprite, flipped for the other side) and
+ *                     the hip the body sits on;
+ *   <unit>-treads     for a tank: its treads.
+ * The cell in the team's colour needs none: it lies on the body and takes the body's shading. A weapon without a map
+ * of its own does NOT take the body's shading: it is a thing of its own lying on the body, so its shape is cut out of
+ * the body's map and it keeps the look the game gives it. Units move about on
+ * several layers, later than the buildings, so their maps go into a picture of their own, once per layer the game
+ * draws such units on ({@link #collectUnits}, {@link #drawUnits}). Not done yet: the legs of the many-legged units,
+ * units made of segments, and a unit carried as a payload.
  */
 public class Surfaces{
     /** The layers of a block other than a conveyor, in drawing order; a missing layer is null. */
@@ -70,6 +93,21 @@ public class Surfaces{
     /** The two kinds of picture, and the folders they are looked for in. */
     private static final int byNormal = 0, byHeight = 1;
     private static final String[] folders = {"normals", "heightmaps"};
+    /** The folder of the pictures that say how glossy each pixel is; found by the same sprite names. */
+    private static final String glossFolder = "gloss";
+    /**
+     * How the gloss travels: in the blue of every pixel, beside what the pixel is. A direction needs only its red and
+     * green (the part pointing up follows from them), a height only its red - so blue is free, and is split in two:
+     *   blue 0 .. 0.3    a height;     gloss = blue / 0.3
+     *   blue 0.6 .. 1    a direction;  gloss = (blue - 0.6) / 0.4
+     * The gap in between is what tells the two kinds apart (mshaders-normals.frag, mshaders-shape.frag).
+     * That is the picture of the frame. In the pictures kept here one more thing has to be said: "this pixel has no
+     * gloss of its own, it takes the block's". That is the very top of each range; a pixel's own gloss fills the
+     * range up to "ownShare" of it (mshaders-normals.frag puts the block's gloss in where it finds the top).
+     */
+    private static final float heightBlue = 0.3f, normalBlue = 0.6f, ownShare = 0.88f;
+    /** How glossy the block being drawn is (Gloss.of): it rides along in the alpha of each sprite's colour. */
+    private float shine = Gloss.plain;
 
     /** Per block: [byNormal] and [byHeight], each with one region per sprite of the block (null without a picture). */
     private final ObjectMap<Block, TextureRegion[][]> layers = new ObjectMap<>();
@@ -92,6 +130,31 @@ public class Surfaces{
     private Texture atlas;
     private Boolean filtered;
 
+    /** The pictures of one kind of unit: for each of its sprites [byNormal] and [byHeight], or null without any. */
+    private static class UnitLook{
+        TextureRegion[] body, leg, hip, treads;
+        /** One per weapon of the unit type, in the order of the unit's mounts. */
+        TextureRegion[][] weapons;
+        /** How glossy the unit is as a whole (Gloss.of). */
+        float gloss;
+    }
+    /** The kinds of unit that have a picture for at least one of their sprites. */
+    private final ObjectMap<UnitType, UnitLook> looks = new ObjectMap<>();
+    /** The units in view that have pictures, lowest first (collectUnits), and the layers the game draws them on. */
+    private final Seq<Unit> units = new Seq<>();
+    private final FloatSeq unitLayers = new FloatSeq();
+    /**
+     * How far above the layer of its units their shading is laid on: past the 0.01 by which larger units lie above
+     * smaller ones and past the weapons that are drawn a little above their unit (Weapon.layerOffset up to 0.02).
+     */
+    public static final float unitPassOffset = 0.035f;
+
+    /** The pictures read so far while loading: each file is read once, however many sprites it serves. */
+    private final Seq<Pixmap> maps = new Seq<>();
+    private final ObjectIntMap<String> known = new ObjectIntMap<>();
+    private final int[] found = new int[2];
+    private int glossMaps;
+
     public void init(){
         try{
             load();
@@ -113,15 +176,47 @@ public class Surfaces{
         atlas.setFilter(filter, filter);
     }
 
-    /** How many blocks have a map of either kind. */
+    /** How many blocks and kinds of unit have a map of either kind. */
     public int count(){
-        return layers.size;
+        return layers.size + looks.size;
     }
 
     private static Fi find(int kind, String name){
-        Fi file = Vars.dataDirectory.child("mshaders-" + folders[kind]).child(name + ".png");
-        if(!file.exists()) file = Vars.tree.get(folders[kind] + "/" + name + ".png");
+        return find(folders[kind], name);
+    }
+
+    private static Fi find(String folder, String name){
+        Fi file = Vars.dataDirectory.child("mshaders-" + folder).child(name + ".png");
+        if(!file.exists()) file = Vars.tree.get(folder + "/" + name + ".png");
         return file.exists() ? file : null;
+    }
+
+    /**
+     * Puts a map into the form it is kept in: red and green = the direction (made exactly one long first), or red =
+     * the height; blue = the gloss of the pixel, in the range of its kind (heightBlue, normalBlue), or the top of that
+     * range for "as glossy as the block". "gloss" is the gloss map of the sprite, or null.
+     */
+    private static void encode(Pixmap map, int kind, Pixmap gloss){
+        if(gloss != null && (gloss.width != map.width || gloss.height != map.height)){
+            Log.warn("[mshaders] a gloss map of @x@ does not fit its @x@ sprite and is left out", gloss.width, gloss.height, map.width, map.height);
+            gloss = null;
+        }
+        for(int x = 0; x < map.width; x++){
+            for(int y = 0; y < map.height; y++){
+                int c = map.get(x, y);
+                if((c & 0xff) < 128) continue;
+                int g = gloss == null ? 0 : gloss.get(x, y);
+                // the pixel's own gloss in the lower part of the range; the top of the range = the block's
+                float glossy = (g & 0xff) < 128 ? 1f : level(g) * ownShare;
+                if(kind == byHeight){
+                    map.set(x, y, Color.rgba8888((c >>> 24) / 255f, 0f, heightBlue * glossy, 1f));
+                }else{
+                    float nx = (c >>> 24) / 255f * 2f - 1f, ny = (c >>> 16 & 0xff) / 255f * 2f - 1f, nz = (c >>> 8 & 0xff) / 255f * 2f - 1f;
+                    float len = Math.max((float)Math.sqrt(nx * nx + ny * ny + nz * nz), 0.001f);
+                    map.set(x, y, Color.rgba8888(nx / len * 0.5f + 0.5f, ny / len * 0.5f + 0.5f, normalBlue + (1f - normalBlue) * glossy, 1f));
+                }
+            }
+        }
     }
 
     /** The sprite names of a block, one per slot of its region arrays. */
@@ -223,12 +318,66 @@ public class Surfaces{
         return true;
     }
 
+    /**
+     * Reads that picture, with the gloss map that goes with it, unless it has been read already.
+     * @return its place among the pictures (maps)
+     */
+    private int read(int kind, Fi file, Fi glossFile){
+        String key = kind + ":" + file.path() + (glossFile == null ? "" : "|" + glossFile.path());
+        int index = known.get(key, -1);
+        if(index >= 0) return index;
+        Pixmap map = new Pixmap(file);
+        if(kind == byHeight){
+            Pixmap made = fromHeight(map);
+            map.dispose();
+            map = made;
+        }
+        Pixmap gloss = glossFile == null ? null : new Pixmap(glossFile);
+        encode(map, kind, gloss);
+        if(gloss != null){
+            gloss.dispose();
+            glossMaps++;
+        }
+        index = maps.size;
+        maps.add(map);
+        known.put(key, index);
+        found[kind]++;
+        return index;
+    }
+
+    /** The sprites of a unit that can have a picture: body, leg and hip (two-legged units), treads (tanks), then one per weapon. */
+    private static String[] unitSprites(UnitType type){
+        String[] names = new String[unitWeapons + type.weapons.size];
+        names[0] = type.name;
+        names[1] = type.name + "-leg";
+        names[2] = type.name + "-base";
+        names[3] = type.name + "-treads";
+        for(int i = 0; i < type.weapons.size; i++) names[unitWeapons + i] = type.weapons.get(i).name;
+        return names;
+    }
+
+    /** Where the weapons begin among the sprites of a unit (unitSprites). */
+    private static final int unitWeapons = 4;
+
     private void load(){
-        Seq<Pixmap> maps = new Seq<>();
-        ObjectIntMap<String> known = new ObjectIntMap<>();   // file -> its place in maps: a picture shared by several sprites is packed once
         Seq<Block> owners = new Seq<>();
         IntSeq kinds = new IntSeq(), slots = new IntSeq(), which = new IntSeq();
-        int[] found = new int[2];
+        Seq<UnitType> unitOwners = new Seq<>();
+        IntSeq unitKinds = new IntSeq(), unitSlots = new IntSeq(), unitWhich = new IntSeq();
+        for(UnitType type : Vars.content.units()){
+            String[] names = unitSprites(type);
+            for(int kind = 0; kind < 2; kind++){
+                for(int slot = 0; slot < names.length; slot++){
+                    if(names[slot] == null || names[slot].isEmpty()) continue;
+                    Fi file = find(kind, names[slot]);
+                    if(file == null) continue;
+                    unitOwners.add(type);
+                    unitKinds.add(kind);
+                    unitSlots.add(slot);
+                    unitWhich.add(read(kind, file, find(glossFolder, names[slot])));
+                }
+            }
+        }
         for(Block block : Vars.content.blocks()){
             String[] names = sprites(block);
             for(int kind = 0; kind < 2; kind++){
@@ -237,24 +386,13 @@ public class Surfaces{
                     // a conveyor picture without a frame number serves every frame of its shape
                     if(file == null && block instanceof Conveyor) file = find(kind, block.name + "-" + slot / beltFrames);
                     if(file == null) continue;
-                    String key = kind + ":" + file.path();
-                    int index = known.get(key, -1);
-                    if(index < 0){
-                        Pixmap map = new Pixmap(file);
-                        if(kind == byHeight){
-                            Pixmap made = fromHeight(map);
-                            map.dispose();
-                            map = made;
-                        }
-                        index = maps.size;
-                        maps.add(map);
-                        known.put(key, index);
-                        found[kind]++;
-                    }
+                    // how glossy each pixel of that sprite is, if somebody has drawn that
+                    Fi glossFile = find(glossFolder, names[slot]);
+                    if(glossFile == null && block instanceof Conveyor) glossFile = find(glossFolder, block.name + "-" + slot / beltFrames);
                     owners.add(block);
                     kinds.add(kind);
                     slots.add(slot);
-                    which.add(index);
+                    which.add(read(kind, file, glossFile));
                 }
             }
         }
@@ -301,6 +439,28 @@ public class Surfaces{
             });
             of[kinds.get(i)][slots.get(i)] = regions[which.get(i)];
         }
+        for(int i = 0; i < unitOwners.size; i++){
+            UnitType type = unitOwners.get(i);
+            UnitLook look = looks.get(type, () -> {
+                UnitLook made = new UnitLook();
+                made.weapons = new TextureRegion[type.weapons.size][];
+                made.gloss = Gloss.of(type);
+                return made;
+            });
+            int slot = unitSlots.get(i);
+            TextureRegion[] of = slot == 0 ? look.body : slot == 1 ? look.leg : slot == 2 ? look.hip : slot == 3 ? look.treads : look.weapons[slot - unitWeapons];
+            if(of == null){
+                of = new TextureRegion[2];
+                if(slot == 0) look.body = of;
+                else if(slot == 1) look.leg = of;
+                else if(slot == 2) look.hip = of;
+                else if(slot == 3) look.treads = of;
+                else look.weapons[slot - unitWeapons] = of;
+            }
+            of[unitKinds.get(i)] = regions[unitWhich.get(i)];
+        }
+        maps.clear();
+        known.clear();
         // conveyors: a frame without a picture borrows the nearest frame of the same shape that has one
         for(ObjectMap.Entry<Block, TextureRegion[][]> e : layers){
             if(!(e.key instanceof Conveyor)) continue;
@@ -318,7 +478,148 @@ public class Surfaces{
                 }
             }
         }
-        Log.info("[mshaders] surface maps: @ normal map(s) and @ height map(s) for @ block(s)", found[byNormal], found[byHeight], layers.size);
+        Log.info("[mshaders] surface maps: @ normal map(s) and @ height map(s) for @ block(s) and @ kind(s) of unit, @ of them with a gloss map", found[byNormal], found[byHeight], layers.size, looks.size, glossMaps);
+    }
+
+    /** The layer the game draws that unit on (UnitType.draw). */
+    private static float layerOf(Unit unit){
+        UnitType type = unit.type;
+        return unit.elevation > 0.5f || (type.flying && unit.dead) ? type.flyingLayer : type.groundLayer + Mathf.clamp(type.hitSize / 4000f, 0f, 0.01f);
+    }
+
+    /** Units whose layers differ by less than a tenth are shaded together: the layer rounded to tenths. */
+    private static float passOf(float layer){
+        return Mathf.round(layer * 10f) / 10f;
+    }
+
+    private static final java.util.Comparator<Unit> byLayer = (a, b) -> Float.compare(layerOf(a), layerOf(b));
+
+    /**
+     * Finds the units in view that have a map. To be called once a frame, before the frame is played back.
+     * @return the layers they are on, each rounded to tenths - one shading pass is due right after each ({@link #drawUnits})
+     */
+    public FloatSeq collectUnits(){
+        units.clear();
+        unitLayers.clear();
+        if(looks.isEmpty() || Vars.player == null) return unitLayers;
+        Rect view = Core.camera.bounds(Tmp.r1);
+        for(Unit unit : Groups.unit){
+            if(!looks.containsKey(unit.type)) continue;
+            float reach = Math.max(unit.hitSize * 2f, 16f) + 8f;
+            if(unit.x + reach < view.x || unit.x - reach > view.x + view.width || unit.y + reach < view.y || unit.y - reach > view.y + view.height) continue;
+            // nothing the fog of war hides (UnitType.draw); units made of segments are drawn piece by piece - not yet
+            if(!unit.isValid() || unit.inFogTo(Vars.player.team()) || unit instanceof Crawlc || unit instanceof Segmentc) continue;
+            units.add(unit);
+            float pass = passOf(layerOf(unit));
+            if(!unitLayers.contains(pass)) unitLayers.add(pass);
+        }
+        // where two units overlap, the one on the higher layer is on top - here as in the game
+        if(units.size > 1) units.sort(byLayer);
+        return unitLayers;
+    }
+
+    /** What drawUnits was given: how to switch the batch to cutting shapes out of the picture, and back to laying maps on it. */
+    private Runnable cutState, layState;
+    private boolean cutting;
+
+    /**
+     * Draws the maps of the units of that layer (one of those collectUnits gave), with whatever batch shader, blend
+     * mode and target are set - those of "lay".
+     * @param cut sets the batch up so that a sprite of the game drawn with it empties the picture where the sprite is
+     * @param lay sets it back to drawing maps
+     * @return how many units were drawn
+     */
+    public int drawUnits(float pass, Runnable cut, Runnable lay){
+        cutState = cut;
+        layState = lay;
+        cutting = false;
+        applyFilter();
+        first = Core.settings.getBool(ShaderMod.normalsHeight, true) ? byHeight : byNormal;
+        int drawn = 0;
+        for(Unit unit : units){
+            if(passOf(layerOf(unit)) != pass) continue;
+            UnitLook look = looks.get(unit.type);
+            if(look == null) continue;
+            drawUnit(unit, look);
+            drawn++;
+        }
+        Draw.color();
+        return drawn;
+    }
+
+    private TextureRegion pick(TextureRegion[] of){
+        return of == null ? null : of[first] != null ? of[first] : of[1 - first];
+    }
+
+    /** One unit's sprites, each placed and turned the way the game draws it (UnitType.draw). */
+    private void drawUnit(Unit unit, UnitLook look){
+        UnitType type = unit.type;
+        shine = look.gloss;
+        float x = unit.x, y = unit.y, turn = unit.rotation - 90f;
+        if(unit instanceof Mechc mech){
+            // UnitType.drawMech(): two legs - one sprite, flipped for the other side - that swing forward and back and
+            // are drawn shorter while lifted; then the hip. In flight (a nova boosting) the legs fold back.
+            float e = unit.elevation, base = mech.baseRotation();
+            float sin = Mathf.lerp(Mathf.sin(mech.walkExtend(true), 2f / Mathf.PI, 1f), 0f, e);
+            float extension = Mathf.lerp(mech.walkExtend(false), 0f, e), boost = e * 2f;
+            TextureRegion leg = pick(look.leg);
+            if(leg != null){
+                for(int i : Mathf.signs){
+                    layer(leg, unit.x + Angles.trnsx(base, extension * i - boost, -boost * i), unit.y + Angles.trnsy(base, extension * i - boost, -boost * i),
+                        i, 1f - Math.max(-sin * i, 0f) * 0.5f, 0f, 0f, base - 90f + 35f * i * e);
+                }
+            }
+            layer(pick(look.hip), unit.x, unit.y, false, false, base - 90f);
+            // the body sways on the legs (UnitType.draw moves the unit by this much while it draws the rest)
+            float side = Mathf.lerp(Mathf.sin(mech.walkExtend(true), 2f / Mathf.PI, 1f) * type.mechSideSway, 0f, e);
+            float front = Mathf.lerp(Mathf.sin(mech.walkExtend(true), 1f / Mathf.PI, 1f) * type.mechFrontSway, 0f, e);
+            x += Angles.trnsx(base, 0f, side) + Angles.trnsx(base + 90f, 0f, front);
+            y += Angles.trnsy(base, 0f, side) + Angles.trnsy(base + 90f, 0f, front);
+        }
+        // UnitType.drawTank(): the treads lie under the body, turned with it
+        if(unit instanceof Tankc) layer(pick(look.treads), unit.x, unit.y, false, false, turn);
+        // weapons the game draws below the body, the body, then the weapons on it
+        drawWeapons(unit, look, x, y, true);
+        if(type.drawBody) layer(pick(look.body), x, y, false, false, turn);
+        drawWeapons(unit, look, x, y, false);
+    }
+
+    /** Weapon.draw(): each weapon at its place on the unit, turned to where it aims and pushed back by its recoil. */
+    private void drawWeapons(Unit unit, UnitLook look, float x, float y, boolean under){
+        float turn = unit.rotation - 90f;
+        WeaponMount[] mounts = unit.mounts;
+        for(int i = 0; i < mounts.length && i < look.weapons.length; i++){
+            TextureRegion map = pick(look.weapons[i]);
+            Weapon weapon = mounts[i].weapon;
+            // a weapon drawn far above its unit comes after the shading of that layer: left out
+            if((weapon.layerOffset < 0f) != under || weapon.layerOffset > 0.02f) continue;
+            // a weapon under the body needs no cutting out: the body's map covers it as the body covers the weapon
+            if(map == null && (under || !weapon.region.found() || cutState == null)) continue;
+            float recoil = Mathf.pow(mounts[i].recoil, weapon.recoilPow) * weapon.recoil;
+            float aim = turn + (weapon.rotate ? mounts[i].rotation : weapon.baseRotation);
+            float wx = x + Angles.trnsx(turn, weapon.x, weapon.y) + Angles.trnsx(aim, 0f, -recoil), wy = y + Angles.trnsy(turn, weapon.x, weapon.y) + Angles.trnsy(aim, 0f, -recoil);
+            if(map == null){
+                // No map of its own: the weapon's own sprite, exactly where the game draws it, empties the picture
+                // there - so the weapon is not shaded as if it were part of the plates it lies on.
+                if(!cutting){
+                    cutState.run();
+                    cutting = true;
+                }
+                Draw.color();
+                Draw.rect(weapon.region, wx, wy, weapon.region.width * weapon.region.scl() * (weapon.flipSprite ? -1f : 1f), weapon.region.height * weapon.region.scl(), aim);
+                continue;
+            }
+            if(cutting){
+                layState.run();
+                cutting = false;
+            }
+            // the weapon of the other side is the same sprite flipped left to right (Weapon.flipSprite)
+            layer(map, wx, wy, weapon.flipSprite, false, aim);
+        }
+        if(cutting){
+            layState.run();
+            cutting = false;
+        }
     }
 
     /**
@@ -393,6 +694,7 @@ public class Surfaces{
     /** One building's layers, placed and turned the way the game draws its sprites. */
     private boolean draw(Building build, TextureRegion[][] of){
         Block block = build.block;
+        shine = Gloss.of(block);
         if(build instanceof Conveyor.ConveyorBuild belt){
             // Conveyor.ConveyorBuild.draw(): which of the four frames of the animation shows right now ...
             Conveyor conveyor = (Conveyor)block;
@@ -500,6 +802,7 @@ public class Surfaces{
         for(Building build : heads){
             TextureRegion[][] of = layers.get(build.block);
             if(of == null || !headOf(build)) continue;
+            shine = Gloss.of(build.block);
             // a turret put together from parts: those the game draws under its body first, then the body, then the rest
             boolean parts = build instanceof Turret.TurretBuild && of[byNormal].length > head + 1;
             if(parts) drawParts((Turret.TurretBuild)build, of, true);
@@ -586,7 +889,7 @@ public class Surfaces{
     /** A picture drawn stretched (a negative stretch mirrors it) and turned about a point other than its middle, as RegionPart.rect does with the sprite. */
     private void layer(TextureRegion map, float x, float y, float sclX, float sclY, float originX, float originY, float degrees){
         if(map == null) return;
-        Draw.color(Mathf.cosDeg(degrees) * 0.5f + 0.5f, Mathf.sinDeg(degrees) * 0.5f + 0.5f, (sclX < 0f ? 0.25f : 0f) + (sclY < 0f ? 0.5f : 0f), 1f);
+        Draw.color(Mathf.cosDeg(degrees) * 0.5f + 0.5f, Mathf.sinDeg(degrees) * 0.5f + 0.5f, (sclX < 0f ? 0.25f : 0f) + (sclY < 0f ? 0.5f : 0f), shine);
         float w = map.width / 4f * sclX, h = map.height / 4f * sclY;
         Draw.rect(map, x, y, w, h, w / 2f + originX, h / 2f + originY, degrees);
     }
@@ -594,8 +897,9 @@ public class Surfaces{
     private void layer(TextureRegion map, float x, float y, boolean flipX, boolean flipY, float degrees){
         if(map == null) return;
         // The angle rides along as a colour: red = cosine, green = sine (0..1); blue says which way the sprite is
-        // mirrored (0, 1/4 = left-right, 1/2 = up-down, 3/4 = both). Read back in mshaders-normals.frag.
-        Draw.color(Mathf.cosDeg(degrees) * 0.5f + 0.5f, Mathf.sinDeg(degrees) * 0.5f + 0.5f, (flipX ? 0.25f : 0f) + (flipY ? 0.5f : 0f), 1f);
+        // mirrored (0, 1/4 = left-right, 1/2 = up-down, 3/4 = both); alpha = how glossy the block is. Read back in
+        // mshaders-normals.frag.
+        Draw.color(Mathf.cosDeg(degrees) * 0.5f + 0.5f, Mathf.sinDeg(degrees) * 0.5f + 0.5f, (flipX ? 0.25f : 0f) + (flipY ? 0.5f : 0f), shine);
         // sprites have 4 pixels per world unit
         Draw.rect(map, x, y, map.width / 4f * (flipX ? -1f : 1f), map.height / 4f * (flipY ? -1f : 1f), degrees);
     }

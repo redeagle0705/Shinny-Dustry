@@ -6,6 +6,8 @@ import arc.graphics.*;
 import arc.graphics.Texture.*;
 import arc.graphics.g2d.*;
 import arc.graphics.gl.*;
+import arc.struct.FloatSeq;
+import arc.struct.IntMap;
 import arc.util.*;
 import mindustry.*;
 import mindustry.game.EventType.*;
@@ -67,6 +69,17 @@ public class Scene{
     private float[] scores = new float[0];
     private boolean[] chosen = new boolean[0];
     private FrameBuffer gameLight, raw, near;
+    /**
+     * Dark maps, for the units in the air (liftAir): their shapes (screen size), the lights with nothing in their way
+     * (quarter size), and the light picture with those two worked in (screen size). "lit" is the picture the frame is
+     * lit with: gameLight, or airLit while a unit is in the air.
+     */
+    private FrameBuffer air, open, airLit, lit;
+    private Shader airShader;
+    /** True while the light shader makes the picture of the lights with nothing in their way. */
+    private boolean lightOpen;
+    private int airCount;
+    private final Cons<Unit> airUnit = this::airUnit;
     private Shader blurShader, deepShader, tintShader, shapeShader, normalShader, itemShader;
     /** The normals of the normal-mapped buildings in view, as drawn this frame (screen size), and the frame it is from. */
     private FrameBuffer normals;
@@ -120,6 +133,16 @@ public class Scene{
     private static final Blending mirrorBlend = new Blending(Gl.srcAlpha, Gl.oneMinusSrcAlpha, Gl.one, Gl.oneMinusSrcAlpha);
     /** For pictures that hold colour already multiplied by its cover: what is drawn replaces what is there by its cover. */
     private static final Blending coverBlend = new Blending(Gl.one, Gl.oneMinusSrcAlpha);
+    /** A sprite drawn with it empties the target where the sprite is, by as much as the sprite covers. */
+    private static final Blending cutBlend = new Blending(Gl.zero, Gl.oneMinusSrcAlpha);
+    /** For Surfaces.drawUnits: the batch set up to cut the shape of a game sprite out of the picture, and back to laying maps on it. */
+    private final Runnable cutState = () -> {
+        Draw.shader();
+        Draw.blend(cutBlend);
+    }, layState = () -> {
+        Draw.shader(normalShader);
+        Draw.blend(coverBlend);
+    };
     /** Writes nothing at all: what is drawn with it leaves an empty place in the target. */
     private static final Blending eraseBlend = new Blending(Gl.zero, Gl.zero);
     private final Cons<Unit> unitMirror = this::mirrorUnit;
@@ -127,6 +150,10 @@ public class Scene{
     private static final boolean report = System.getProperty("mstest.out") != null;
 
     private final Runnable shapePass = this::shapePass, headPass = this::headPass;
+    /** The shading passes for the units, one per layer units with a map are on (keyed by that layer in tenths). */
+    private final IntMap<Runnable> unitShapePasses = new IntMap<>();
+    /** The frame the lights for the shading were last picked in (prepareShape). */
+    private long shapePrepared = -10;
     private final Runnable grabMask = this::grabMask, buildObjects = this::buildObjects,
         snapshotBefore = this::snapshotBefore, buildGlow = this::buildGlow;
 
@@ -258,7 +285,7 @@ public class Scene{
             deepShader = new Shader(vert, Vars.tree.get("shaders/mshaders-deep.frag").readString()){
                 @Override
                 public void apply(){
-                    gameLight.getTexture().bind(1);
+                    lit.getTexture().bind(1);
                     near.getTexture().bind(0);
                     set(this, "u_lit", 1);
                     set(this, "u_deep", ShaderMod.percent(ShaderMod.darkDepth, 50));
@@ -275,6 +302,8 @@ public class Scene{
                     set(this, "u_aim", 2);
                     set(this, "u_aimed", shapeAimed ? 1f : 0f);
                     set(this, "u_shape", ShaderMod.percent(ShaderMod.normalsStrength, 100));
+                    // units are not lit by the glow they carry themselves, unless the player wants that
+                    set(this, "u_own", shapingUnits && !Core.settings.getBool(ShaderMod.normalsOwnLight, false) ? 1f : 0f);
                     set(this, "u_glint", wantGlint ? ShaderMod.percent(ShaderMod.glintStrength, 100) : 0f);
                     set(this, "u_band", ShaderMod.percent(ShaderMod.glintBand, 100));
                     set(this, "u_time", Time.globalTime / 60f);
@@ -300,7 +329,7 @@ public class Scene{
                     boolean spared = glowFrame == Core.graphics.getFrameId();
                     if(spared){
                         glow.getTexture().bind(1);
-                        gameLight.getTexture().bind(0);
+                        lit.getTexture().bind(0);
                     }
                     set(this, "u_added", 1);
                     set(this, "u_spare", spared ? 1f : 0f);
@@ -317,7 +346,7 @@ public class Scene{
                 public void apply(){
                     setCamera(this);
                     // units in the way of the light (UnitShades)
-                    boolean shaded = wantUnits && unitShades.ready();
+                    boolean shaded = wantUnits && unitShades.ready() && !lightOpen;
                     set(this, "u_unitsOn", shaded ? 1f : 0f);
                     if(shaded){
                         unitShades.texture().bind(1);
@@ -327,7 +356,7 @@ public class Scene{
                         // how much of the light a unit takes away where it is in the way: 1 = all of it
                         set(this, "u_unitDepth", Math.min(Math.max(ShaderMod.percent(ShaderMod.lightsUnitsDepth, 65), 0f), 1f));
                     }
-                    set(this, "u_masked", lightMask != null ? 1f : 0f);
+                    set(this, "u_masked", lightMask != null && !lightOpen ? 1f : 0f);
                     set(this, "u_own", lightMaskOwn ? 1f : 0f);
                     set(this, "u_mode", lightMode);
                     set(this, "u_count", lightCount);
@@ -347,6 +376,20 @@ public class Scene{
             after = new FrameBuffer();
             gameLight = new FrameBuffer();
             near = new FrameBuffer();
+            air = new FrameBuffer();
+            open = new FrameBuffer();
+            airLit = new FrameBuffer();
+            lit = gameLight;
+            airShader = new Shader(vert, Vars.tree.get("shaders/mshaders-air.frag").readString()){
+                @Override
+                public void apply(){
+                    open.getTexture().bind(2);
+                    air.getTexture().bind(1);
+                    gameLight.getTexture().bind(0);
+                    set(this, "u_open", 2);
+                    set(this, "u_air", 1);
+                }
+            };
             normals = new FrameBuffer();
             headNormals = new FrameBuffer();
             shapeFrom = normals;
@@ -354,7 +397,7 @@ public class Scene{
             normalShader = new Shader(Vars.tree.get("shaders/default.vert").readString(), Vars.tree.get("shaders/mshaders-normals.frag").readString());
             itemShader = new Shader(Vars.tree.get("shaders/default.vert").readString(), Vars.tree.get("shaders/mshaders-items.frag").readString());
             raw = new FrameBuffer();
-            for(FrameBuffer b : new FrameBuffer[]{objects, light, aim, before, after, glow, gameLight, raw, near}){
+            for(FrameBuffer b : new FrameBuffer[]{objects, light, aim, before, after, glow, gameLight, raw, near, air, open, airLit}){
                 b.getTexture().setFilter(TextureFilter.linear, TextureFilter.linear);
             }
             // The round glow for the lights of the ground: full in the middle, fading to nothing at the rim the way the
@@ -405,6 +448,7 @@ public class Scene{
             tap.ground.clear();
         }
         glowField.clear();
+        unitsShaded = 0;
         boolean post = on(ShaderMod.postOn);
         // the mirror pictures are needed by the water and by the ice (both are drawn through shader layers, which the game
         // only uses while "animated surfaces" is on)
@@ -466,8 +510,83 @@ public class Scene{
             Draw.draw(Layer.turret - 1f, shapePass);
             // the heads of mass drivers and turrets are drawn at Layer.turret: their shading follows right after them (and before their heat glow, Layer.turretHeat)
             Draw.draw(Layer.turret + 0.05f, headPass);
+            // units with a map: their shading follows right after each layer the game draws such units on
+            FloatSeq unitLayers = surfaces.collectUnits();
+            for(int i = 0; i < unitLayers.size; i++){
+                float layer = unitLayers.get(i);
+                int key = Math.round(layer * 10f);
+                Runnable pass = unitShapePasses.get(key);
+                if(pass == null) unitShapePasses.put(key, pass = () -> unitShapePass(layer));
+                Draw.draw(layer + Surfaces.unitPassOffset, pass);
+            }
         }
     }
+
+    /**
+     * What the shading needs besides the picture of the surfaces, once a frame: the light sources, each with its own
+     * place, the glow of the ground and (for the glint) the direction most light comes from. Every light of the frame
+     * is known by the time a pass runs: lights are reported while the frame is queued, the passes run when it is
+     * played back.
+     */
+    private void prepareShape(){
+        if(shapePrepared == Core.graphics.getFrameId()) return;
+        shapePrepared = Core.graphics.getFrameId();
+        pickLightMask();
+        shapeAimed = false;
+        // the light sources, each with its own place, for the shading
+        shapeLit = tap != null;
+        if(shapeLit) pickLights();
+        // the glow of the ground is not among them: where it comes from at each tile is worked out apart (GlowField)
+        if(tap != null && groundLevel() > 0f) glowField.build(tap.ground);
+        // "the direction most light comes from" is now only needed by the glint
+        if(wantGlint && lightMask != null && tap != null){
+            Blending.disabled.apply();
+            lightPass(aim, Math.max(scene.getWidth() / 4, 2), Math.max(scene.getHeight() / 4, 2), 1);
+            aimFrame = Core.graphics.getFrameId();
+            shapeAimed = true;
+            Blending.normal.apply();
+        }
+    }
+
+    /**
+     * The same shading for the units that have a map, once per layer the game draws such units on, right after that
+     * layer: the units of the layer are on screen then, and nothing that the game draws over them is yet. Their maps go
+     * into a picture of their own (whatever is in it gets shaded), sprite for sprite as the game draws the unit - body,
+     * weapons, legs, each turned as it is turned (Surfaces.drawUnits).
+     */
+    private void unitShapePass(float layer){
+        if(!capturing || normalShader == null) return;
+        Draw.flush();
+        prepareShape();
+        Blending previous = Draw.getBlend();
+        Draw.sort(false);
+        Draw.blend(coverBlend);
+        Draw.shader(normalShader);
+        headNormals.resize(scene.getWidth(), scene.getHeight());
+        headNormals.begin(Color.clear);
+        int drawn = surfaces.drawUnits(layer, cutState, layState);
+        Draw.flush();
+        headNormals.end();
+        Draw.shader();
+        Draw.blend(previous);
+        Draw.sort(true);
+        if(drawn > 0){
+            unitsShaded += drawn;
+            shapeFrom = headNormals;
+            shapingUnits = true;
+            tintBlend.apply();
+            Draw.blit(headNormals.getTexture(), shapeShader);
+            shapingUnits = false;
+            shapeFrom = normals;
+        }
+        // back to what the frame expects (see copyScene)
+        Blending.normal.apply();
+    }
+
+    /** How many units got their shading in this frame (for the test report). */
+    private int unitsShaded;
+    /** True while the shading is laid on units (unitShapePass), not on buildings. */
+    private boolean shapingUnits;
 
     /**
      * Shading for the blocks that have a normal map, multiplied onto the frame as it stands at this moment - buildings
@@ -509,20 +628,7 @@ public class Scene{
         Blending.normal.apply();
         if(drawn == 0) return;
         normalsFrame = Core.graphics.getFrameId();
-        pickLightMask();
-        shapeAimed = false;
-        // the light sources, each with its own place, for the shading
-        shapeLit = tap != null;
-        if(shapeLit) pickLights();
-        // the glow of the ground is not among them: where it comes from at each tile is worked out apart (GlowField)
-        if(tap != null && groundLevel() > 0f) glowField.build(tap.ground);
-        // "the direction most light comes from" is now only needed by the glint
-        if(wantGlint && lightMask != null && tap != null){
-            Blending.disabled.apply();
-            lightPass(aim, Math.max(scene.getWidth() / 4, 2), Math.max(scene.getHeight() / 4, 2), 1);
-            aimFrame = Core.graphics.getFrameId();
-            shapeAimed = true;
-        }
+        prepareShape();
         shapeFrom = normals;
         tintBlend.apply();
         Draw.blit(normals.getTexture(), shapeShader);
@@ -697,7 +803,7 @@ public class Scene{
         if(report){
             // only while the test kit is running: lets it write into its report what really happened this frame
             System.setProperty("mshaders.status", "mask " + (mask != null) + ", lights recorded " + (tap == null ? -1 : tap.data.size / LightTap.stride)
-                + ", unit shapes " + unitShades.drawn() + ", ground lights " + (tap == null ? -1 : tap.ground.size / LightTap.groundStride) + ", glow field " + glowField.ready() + " (last made in " + glowField.lastMillis + " ms)"
+                + ", unit shapes " + unitShades.drawn() + ", units shaded by map " + unitsShaded + ", ground lights " + (tap == null ? -1 : tap.ground.size / LightTap.groundStride) + ", glow field " + glowField.ready() + " (last made in " + glowField.lastMillis + " ms)"
                 + ", lights drawn " + (lit ? lightCount : 0) + ", light pass " + lightReady + ", game lighting drawn here " + gameLit + ", glint " + glintReady + ", reflection image " + (reflection() != null));
         }
         Draw.blit(scene.getTexture(), composite);
@@ -826,18 +932,67 @@ public class Scene{
         gameLight.end();
         Gl.blendEquationSeparate(Gl.funcAdd, Gl.funcAdd);
 
+        // what is in the air is above the blocks: the shade a wall throws on the ground does not lie on it
+        lit = liftAir(w, h);
         Draw.color();
         // the colour of the light onto what it lights (the game's lighting below only takes darkness away)
         if(Core.settings.getInt(ShaderMod.lightsColor, 100) > 0){
             tintBlend.apply();
-            Draw.blit(gameLight.getTexture(), tintShader);
+            Draw.blit(lit.getTexture(), tintShader);
             Blending.normal.apply();
         }
         Shaders.light.ambient.set(Vars.state.rules.ambientLight);
-        gameLight.blit(Shaders.light);
+        lit.blit(Shaders.light);
         // the less light, the darker: black over what is far from every light (same blending as the line above)
         if(deepen) Draw.blit(near.getTexture(), deepShader);
         gameLit = true;
+    }
+
+    /**
+     * Dark maps: the light picture (gameLight) is a picture of the ground - behind a wall that stops a light the ground
+     * is dark. The game lays that picture over everything, the units in the air too, so the shade of a wall lay ON a
+     * unit flying over it: black bars across the unit, most of all from its own glow, which every wall under it shades.
+     * A unit in the air is above the blocks. So: the shapes of the units in the air go into a picture of their own, the
+     * same lights are worked out once more with nothing in their way, and inside those shapes the light picture takes
+     * that light instead (mshaders-air.frag).
+     * @return the picture to light this frame with: gameLight itself while nothing is in the air
+     */
+    private FrameBuffer liftAir(int w, int h){
+        Draw.flush();
+        Blending previous = Draw.getBlend();
+        Draw.sort(false);
+        Draw.blend(mirrorBlend);
+        Draw.color();
+        air.resize(scene.getWidth(), scene.getHeight());
+        air.begin(Color.clear);
+        airCount = 0;
+        float cw = Core.camera.width, ch = Core.camera.height, margin = 64f;
+        Groups.unit.intersect(Core.camera.position.x - cw / 2f - margin, Core.camera.position.y - ch / 2f - margin, cw + margin * 2f, ch + margin * 2f, airUnit);
+        Draw.flush();
+        air.end();
+        Draw.blend(previous);
+        Draw.sort(true);
+        if(airCount > 0){
+            Blending.disabled.apply();
+            lightOpen = true;
+            lightPass(open, w, h, 2);
+            lightOpen = false;
+            airLit.resize(scene.getWidth(), scene.getHeight());
+            airLit.begin(Color.clear);
+            Draw.blit(gameLight.getTexture(), airShader);
+            airLit.end();
+        }
+        // what the lighting below expects (the state the light picture was left in)
+        Blending.normal.apply();
+        return airCount > 0 ? airLit : gameLight;
+    }
+
+    /** A unit in the air, as its shape: the layer rule of the game (UnitType.draw) - off the ground by more than half. */
+    private void airUnit(Unit unit){
+        TextureRegion icon = unit.type.fullIcon;
+        if(icon == null || !icon.found() || !unit.isValid() || unit.elevation <= 0.5f || unit.inFogTo(Vars.player.team())) return;
+        Draw.rect(icon, unit.x, unit.y, unit.rotation - 90f);
+        airCount++;
     }
 
     /** Copies the recorded lights that reach the screen into the shader arrays; if there are too many, the strongest stay. */
@@ -929,6 +1084,8 @@ public class Scene{
         set(s, "u_aimed", aimReady ? 1f : 0f);
         set(s, "u_band", ShaderMod.percent(ShaderMod.glintBand, 100));
         set(s, "u_time", Time.globalTime / 60f);
+        set(s, "u_day", ShaderMod.daylight());
+        if(s.hasUniform("u_sunDir")) s.setUniformf("u_sunDir", ShaderMod.sunX(), ShaderMod.sunY());
         setCamera(s);
         if(lightReady){
             light.getTexture().bind(1);
@@ -951,6 +1108,11 @@ public class Scene{
         set(s, "u_shapes", 5);
         set(s, "u_outlines", 6);
         set(s, "u_shaped", outlines != null ? 1f : 0f);
+        // how glossy each block is as a whole: the glint of the blocks that have no map of their own goes by it
+        Texture glossy = glintReady ? occluders.gloss() : null;
+        if(glossy != null) glossy.bind(7);
+        set(s, "u_gloss", 7);
+        set(s, "u_glossy", glossy != null ? 1f : 0f);
         // blocks with a normal map: their shading was laid on in the middle of the frame (shapePass); here the map only
         // tells the glint which way a face points
         boolean shapedGlint = glintReady && shapeReady;

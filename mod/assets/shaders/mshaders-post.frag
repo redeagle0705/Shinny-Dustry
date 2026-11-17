@@ -27,6 +27,13 @@ uniform sampler2D u_shapes;
 uniform sampler2D u_outlines;
 uniform float u_shaped;        // 1 when both are bound
 
+// How glossy the block on each tile is (Gloss.java, Occluders.java): one texel per tile, unfiltered, red 0..1 -
+// 0 = matt, 0.5 = half polished, 1 = polished metal.
+uniform sampler2D u_gloss;
+uniform float u_glossy;        // 1 when it is bound
+uniform float u_day;           // how much daylight there is: 1 on a bright map, what the darkness leaves on a dark one
+uniform vec2 u_sunDir;         // direction towards the sun on the ground, length 1
+
 uniform float u_vignette;      // 0 = none, 1 = corners fully dark
 uniform float u_saturation;    // 1 = unchanged
 uniform float u_contrast;      // 1 = unchanged
@@ -100,7 +107,18 @@ void main(){
                 }
             }
             // metal: the highlight keeps most of the material's own colour
-            shine *= block * u_glint;
+            // by what the block is made of: none of it on a matt block, twice as much on polished metal
+            float much = u_glossy > 0.5 ? texture2D(u_gloss, (floor((world + 4.0) / 8.0) + 0.5) * 8.0 / u_world).r * 2.0 : 1.0;
+            shine *= block * u_glint * much;
+            // Polished metal mirrors the sky: the streak that slides over the blocks with a normal map when the camera
+            // moves (mshaders-shape.frag) lies over these too - fainter, because here the faces are only guessed.
+            float gloss = much * 0.5, mirror = gloss * sqrt(gloss);
+            if(mirror > 0.003 && u_day > 0.001){
+                vec2 eye = u_campos + u_resolution * 0.5;
+                float along = dot(world - eye * 0.35 + baked * (lit - away) * 6.0, u_sunDir) / 21.0;
+                float sky = pow(0.5 + 0.5 * sin(along * 6.2832), mix(3.0, 12.0, gloss));
+                color += color * (sky * 0.13 * mirror * u_day * block * u_glint);
+            }
             color += color * shine + vec3(1.0, 0.98, 0.92) * shine * 0.15;
         }
     }

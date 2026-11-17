@@ -34,6 +34,7 @@ uniform float u_glint;         // metal glint strength, 0 = off
 uniform float u_band;          // strength of the drifting sun band
 uniform float u_time;          // seconds
 
+uniform float u_own;           // 1 while units are shaded and a unit is not to be lit by the glow it carries itself
 uniform int u_count;           // light sources of this frame
 uniform vec4 u_lights[MAX_LIGHTS];     // x, y, radius, opacity
 uniform vec4 u_colors[MAX_LIGHTS];     // their colours
@@ -54,12 +55,18 @@ const float SLOPE = 8.0;       // how steep a height map's steps come out: lean 
 const float RELIEF_FLOOR = 0.6; // the darkest a face from a height map gets, as a share of a flat face
 const float LEAN = 4.0;        // the largest sideways-per-height u_glowDir can hold (GlowField.lean)
 
+// The blue of the picture: how glossy the pixel is, and which kind it is (Surfaces.encode, mshaders-normals.frag).
+// A height has blue 0 .. HEIGHT_BLUE, a direction NORMAL_BLUE .. 1; the gap between them tells the two apart.
+const float HEIGHT_BLUE = 0.3;
+const float NORMAL_BLUE = 0.6;
+const float BETWEEN = 0.45;
+
 // The height at another place of the picture, for a pixel that came from a height map; "own" where there is no height
 // to read - nothing drawn, a block with a normal map, an item lying on the belt. So the outline of a block does not
 // turn into a cliff, and a conveyor runs on into the next one at whatever height that one has there.
 float heightAt(vec2 uv, float own){
     vec4 s = texture2D(u_texture, uv);
-    if(s.a < 0.5 || s.b > 0.25 * s.a) return own;
+    if(s.a < 0.5 || s.b > BETWEEN * s.a) return own;
     return s.r / s.a;
 }
 
@@ -73,7 +80,10 @@ void main(){
     if(m.a < 0.02) discard;
     // the picture holds direction times cover (layers are laid over each other by their cover)
     vec3 n;
-    bool relief = m.b <= 0.25 * m.a;
+    bool relief = m.b <= BETWEEN * m.a;
+    // How glossy this pixel is: 0 = matt, 0.5 = half polished, 1 = polished metal (the pixel's own gloss where a gloss
+    // map says so, else what the block is built from - Gloss.java).
+    float gloss = clamp(relief ? m.b / m.a / HEIGHT_BLUE : (m.b / m.a - NORMAL_BLUE) / (1.0 - NORMAL_BLUE), 0.0, 1.0);
     if(relief){
         // From a height map (red = height, blue = 0): the face leans away from where the ground around it is higher.
         // The eight places around this one are read, half a sprite pixel away (an eighth of a world unit; at least one
@@ -97,7 +107,9 @@ void main(){
         float per = SLOPE * 0.5 * min(1.0, 0.25 / far);
         n = normalize(vec3(-gx * per, -gy * per, 1.0));
     }else{
-        n = normalize(m.rgb / m.a * 2.0 - 1.0);
+        // the sideways part is in red and green; the part pointing up is whatever is left of a length of one
+        vec2 xy = m.rg / m.a * 2.0 - 1.0;
+        n = normalize(vec3(xy, sqrt(max(1.0 - dot(xy, xy), 0.0))));
     }
 
     // "got" = light this face receives, "level" = light a flat face would receive from the same lights - kept per
@@ -108,11 +120,30 @@ void main(){
     float around = 0.55 * u_day + 0.06, sun = 0.45 * u_day;
     vec3 level = vec3(around + sun);
     vec3 got = vec3(around + sun * max(dot(n, vec3(u_sunDir * 0.7071, 0.7071)), 0.0) / 0.7071);
+    // Gloss, as numbers the lighting can use:
+    //   keen, much   the soft sheen every block had before there was gloss: how tight it is (1/4 on matt, 1 at half,
+    //                4 on polished metal) and how much of it there is (0, 1, 2);
+    //   mirror       how much the face works as a mirror (0, about 1/3, 1) - what makes a polished face look
+    //                polished: the sun and each lamp show in it as a bright patch (gathered in "spark", in the lamps'
+    //                colours), and a streak of sky lies across it;
+    //   tight        how small those patches are: wide and soft at low gloss, small and hard on polished metal.
+    float keen = pow(4.0, gloss * 2.0 - 1.0), much = gloss * 2.0, mirror = gloss * sqrt(gloss), tight = mix(6.0, 48.0, gloss);
+    vec3 spark = vec3(0.0);
     for(int i = 0; i < MAX_LIGHTS; i++){
         if(i >= u_count) break;
         vec4 l = u_lights[i];
         vec2 d = l.xy - world;
         float dist = length(d), strength = l.w;
+        // A unit's own glow sits in its middle, on the ground under it as far as this pass knows - so it lit the unit
+        // from inside: every face turned to the middle bright, every face turned outwards dark, whatever the sun does.
+        // A light that sits on a unit (Scene.pickLights marks those: u_colors a below 0 = minus the unit's radius, or
+        // 1000 and up with the radius in the hundreds) leaves out what lies within that unit's reach - the unit itself.
+        if(u_own > 0.5){
+            float code = u_colors[i].a;
+            float body = code >= 1000.0 ? floor((code - 1000.0) / 100.0) : max(-code, 0.0);
+            if(body > 0.5) strength *= smoothstep(body * 1.7 + 2.0, body * 2.3 + 6.0, dist);
+            if(strength <= 0.0) continue;
+        }
         // the glow of a flying unit hangs "high" world units up (u_colors a = 1000 + height): a wider, evener, fainter
         // pool, as in mshaders-light.frag, and it falls on the block more from above
         // u_colors a: 1000 + height + 100 * (radius of the unit the light hangs on, whole units) - Scene.pickLights
@@ -130,6 +161,8 @@ void main(){
         vec3 hue = u_colors[i].rgb / max(max(u_colors[i].r, max(u_colors[i].g, u_colors[i].b)), 0.05);
         got += hue * (weight * min(max(dot(n, from), 0.0) / from.z, 2.2));
         level += hue * weight;
+        // the eye looks straight down: a face mirrors the lamp into it where it points halfway between the two
+        if(mirror > 0.003) spark += hue * (weight * pow(max(dot(n, normalize(from + vec3(0.0, 0.0, 1.0))), 0.0), tight));
     }
     // The glow of the ground counts as one more light: as strong as the strongest glowing tile in reach, coming from
     // the sides the glowing ground lies on - a face gets the more of it the more glowing ground it is turned to.
@@ -147,7 +180,9 @@ void main(){
             level += hue * weight;
         }
     }
-    vec3 factor = 1.0 + (got / level - 1.0) * u_shape;
+    // A polished face throws little light back in all directions and much in one: its light and dark sides lie
+    // further apart than those of a matt face.
+    vec3 factor = 1.0 + (got / level - 1.0) * u_shape * mix(0.85, 1.35, gloss);
     // Relief from a height map is small - an arrow one step above its belt. Next to a lamp on a dark map its far side
     // would get almost nothing and come out black, a dark smear beside every arrow. Something that low is still lit
     // by what the belt around it throws back, so it never drops below this share of a flat face's light.
@@ -156,17 +191,34 @@ void main(){
     // Metal glint for these blocks (the same as in mshaders-post.frag, but with the face direction known instead of
     // guessed from the colours): a faint sheen on the faces turned to the sun, the bright band that drifts across the
     // map, and faces turned towards a light catching it. Laid on here so that it stays under the units too.
-    if(u_glint > 0.001){
+    // How glossy the pixel is decides how that looks: on a matt face (gloss 0) there is none of it; at 0.5 it is the
+    // soft sheen blocks always had, with a first hint of the mirror; on polished metal the sheen is tighter and twice
+    // as strong, and the mirror shows in full (see "mirror" above).
+    if(u_glint > 0.001 && much > 0.0){
         float turned = dot(n.xy, u_sunDir);
-        float lit = clamp(turned * 1.6, 0.0, 1.0), away = clamp(-turned * 1.6, 0.0, 1.0);
+        float lit = pow(clamp(turned * 1.6, 0.0, 1.0), keen);
         float band = pow(0.5 + 0.5 * sin((dot(world, vec2(0.7071, 0.7071)) / 170.0 - u_time * 0.22) * 6.2832), 28.0);
         float shine = lit * (0.05 + 0.30 * band * u_band);
         if(u_aimed > 0.5){
             vec2 a = texture2D(u_aim, v_texCoords).rg * 2.0 - 1.0;
             float len = length(a);
-            if(len > 0.03) shine += max(dot(n.xy, a / len), 0.0) * min(len * 2.5, 1.0) * 0.32;
+            if(len > 0.03) shine += pow(max(dot(n.xy, a / len), 0.0), keen) * min(len * 2.5, 1.0) * 0.32;
         }
-        factor *= 1.0 + shine * u_glint * 1.15;
+        factor *= 1.0 + shine * much * u_glint * 1.15;
+        // The mirror. The eye looks straight down, so a face shows the sun where it points halfway between the sun and
+        // the eye. A flat face does not (the sun stands at 45 degrees), and what little of it a flat face would show is
+        // taken off, so that flat ground-level faces stay as they are.
+        vec3 halfway = normalize(vec3(u_sunDir * 0.7071, 1.7071));
+        float sunny = max(pow(max(dot(n, halfway), 0.0), tight) - pow(halfway.z, tight), 0.0);
+        // The sky in it: a soft streak across the faces, at right angles to the sun. It is tied to the ground only in
+        // part, so it slides over the blocks when the camera moves, as a reflection does; and a face that leans shows
+        // another part of the sky, so the streak breaks at every edge - which is how one sees that a face is a mirror.
+        vec2 eye = u_campos + u_resolution * 0.5;
+        float along = dot(world - eye * 0.35 + n.xy * 9.0, u_sunDir) / 21.0;
+        float wave = 0.5 + 0.5 * sin(along * 6.2832);
+        float sky = pow(wave, mix(3.0, 12.0, gloss)) + 0.45 * pow(0.5 + 0.5 * sin((along + 0.3) * 6.2832), 60.0) * max(gloss * 2.0 - 1.0, 0.0);
+        factor += (sunny * 0.6 + sky * 0.3) * mirror * u_day * u_glint;
+        factor += spark * mirror * u_glint * 1.2;
     }
     // as much of it as the map covers this pixel
     factor = mix(vec3(1.0), factor, clamp(m.a, 0.0, 1.0));

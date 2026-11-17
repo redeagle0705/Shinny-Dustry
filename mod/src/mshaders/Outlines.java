@@ -11,6 +11,8 @@ import arc.util.*;
 import mindustry.*;
 import mindustry.mod.*;
 import mindustry.entities.part.*;
+import mindustry.type.UnitType;
+import mindustry.type.Weapon;
 import mindustry.world.*;
 import mindustry.world.blocks.defense.turrets.*;
 import mindustry.world.draw.*;
@@ -29,6 +31,10 @@ import mindustry.world.draw.*;
  * place in the game's list of sprites is pointed at the result. The picture is made as much larger as the outline is
  * wide, so a drawing may reach the very edge of its file; sprites are drawn around their middle, so nothing moves.
  * Normal maps need no outline: where they are transparent nothing is shaded, and the outline stays as dark as it is.
+ *
+ * Units too: the game paints the outline into the body of every unit, into its legs, feet, joints and treads, and into
+ * the weapons that lie on top of it (UnitType.createIcons). A replaced sprite of any of those gets its outline the same
+ * way, in the unit's outlineColor and outlineRadius.
  *
  * A sprite that already has an outline (most of its rim is of the outline colour) is left alone.
  */
@@ -90,6 +96,25 @@ public class Outlines{
             made.add(out);
             targets.add(region);
         }
+        for(UnitType type : Vars.content.units()){
+            // units of mods get their outline from the game itself when the mod is loaded
+            if(!type.outlines || type.minfo.mod != null) continue;
+            // the sprites the game outlines in place (UnitType.createIcons): body, legs, feet, joints, treads ...
+            Seq<TextureRegion> parts = Seq.with(type.region, type.jointRegion, type.footRegion, type.baseJointRegion, type.legRegion, type.treadRegion, type.legBaseRegion);
+            // ... and the weapons that lie on top of the unit
+            for(Weapon weapon : type.weapons){
+                if(weapon.top && weapon.name != null && !weapon.name.isEmpty()) parts.add(weapon.region);
+            }
+            for(TextureRegion part : parts){
+                if(!(part instanceof AtlasRegion region) || !part.found() || region.name == null || targets.contains(region, true)) continue;
+                Fi file = files.get(region.name);
+                if(file == null) continue;
+                Pixmap out = outline(file, type.outlineColor, type.outlineRadius);
+                if(out == null) continue;
+                made.add(out);
+                targets.add(region);
+            }
+        }
         if(made.isEmpty()) return 0;
 
         // all of them side by side in one texture, with a gap between them
@@ -129,16 +154,20 @@ public class Outlines{
 
     /** That sprite with the outline of that block around it, in a picture larger by the width of the outline on every side; null if it has an outline already. */
     private static Pixmap outline(Fi file, Block block){
+        return outline(file, block.outlineColor, block.outlineRadius);
+    }
+
+    private static Pixmap outline(Fi file, Color colour, int radius){
         Pixmap drawn = new Pixmap(file);
-        if(outlined(drawn, block.outlineColor.rgba())){
+        if(outlined(drawn, colour.rgba())){
             drawn.dispose();
             return null;
         }
-        int pad = Math.max(block.outlineRadius, 0);
+        int pad = Math.max(radius, 0);
         Pixmap room = new Pixmap(drawn.width + pad * 2, drawn.height + pad * 2);
         room.draw(drawn, pad, pad);
         drawn.dispose();
-        Pixmap out = Pixmaps.outline(new PixmapRegion(room), block.outlineColor, block.outlineRadius);
+        Pixmap out = Pixmaps.outline(new PixmapRegion(room), colour, radius);
         room.dispose();
         // what the game does to its sprites when linear filtering is on (Drawf.checkBleed): colour under the transparent
         // pixels next to the sprite, so its edge does not get a pale fringe

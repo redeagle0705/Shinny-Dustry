@@ -35,6 +35,9 @@ public class Occluders{
     private final Silhouettes silhouettes = new Silhouettes();
     private Pixmap shapePixmap;
     private Texture shapeTexture;
+    /** A third picture: how glossy the block on each tile is (Gloss.java), red 0..255 = 0..1; 128 where no building stands. Read unfiltered. */
+    private Pixmap glossPixmap;
+    private Texture glossTexture;
     private boolean dirty;
     /** Tiles holding a block that is only sometimes in the way (doors). The game sends no event when one opens or shuts, so these are looked at once a frame. */
     private final IntSeq doors = new IntSeq();
@@ -76,29 +79,40 @@ public class Occluders{
         return (slot & 0xff) << 24 | (slot >> 8 & 0xff) << 16 | (ox * 16 + oy) << 8 | block.size * 15;
     }
 
+    private static int gloss(Tile tile){
+        float gloss = tile.build == null ? Gloss.plain : Gloss.of(tile.block());
+        return Math.round(gloss * 255f) << 24 | 0xff;
+    }
+
     private void rebuild(){
         int w = Vars.world.width(), h = Vars.world.height();
         if(texture != null) texture.dispose();
         if(pixmap != null) pixmap.dispose();
         if(shapeTexture != null) shapeTexture.dispose();
         if(shapePixmap != null) shapePixmap.dispose();
-        texture = shapeTexture = null;
-        pixmap = shapePixmap = null;
+        if(glossTexture != null) glossTexture.dispose();
+        if(glossPixmap != null) glossPixmap.dispose();
+        texture = shapeTexture = glossTexture = null;
+        pixmap = shapePixmap = glossPixmap = null;
         if(w <= 0 || h <= 0) return;
 
         pixmap = new Pixmap(w, h);
         shapePixmap = new Pixmap(w, h);
+        glossPixmap = new Pixmap(w, h);
         doors.clear();
         for(Tile tile : Vars.world.tiles){
             // row 0 of the pixmap is v = 0 of the texture, so tile y needs no flipping
             pixmap.set(tile.x, tile.y, value(tile));
             shapePixmap.set(tile.x, tile.y, shape(tile));
+            glossPixmap.set(tile.x, tile.y, gloss(tile));
             if(tile.block().solidifes) doors.add(tile.pos());
         }
         texture = new Texture(pixmap);
         texture.setFilter(TextureFilter.linear, TextureFilter.linear);
         shapeTexture = new Texture(shapePixmap);
         shapeTexture.setFilter(TextureFilter.nearest, TextureFilter.nearest);
+        glossTexture = new Texture(glossPixmap);
+        glossTexture.setFilter(TextureFilter.nearest, TextureFilter.nearest);
         dirty = false;
     }
 
@@ -122,6 +136,7 @@ public class Occluders{
         if(tile.x < 0 || tile.y < 0 || tile.x >= pixmap.width || tile.y >= pixmap.height) return;
         pixmap.set(tile.x, tile.y, value(tile));
         shapePixmap.set(tile.x, tile.y, shape(tile));
+        glossPixmap.set(tile.x, tile.y, gloss(tile));
         // keep the list of doors up to date
         int pos = tile.pos();
         boolean listed = doors.contains(pos);
@@ -150,6 +165,7 @@ public class Occluders{
         if(dirty){
             texture.draw(pixmap);
             shapeTexture.draw(shapePixmap);
+            glossTexture.draw(glossPixmap);
             dirty = false;
         }
         return texture;
@@ -158,6 +174,11 @@ public class Occluders{
     /** @return the picture of blocks that are not plain squares, brought up to date; null when there is no world */
     public Texture shapes(){
         return texture() == null ? null : shapeTexture;
+    }
+
+    /** @return how glossy the block on each tile is, brought up to date; null when there is no world */
+    public Texture gloss(){
+        return texture() == null ? null : glossTexture;
     }
 
     /** @return the outlines those blocks have (Silhouettes.java), for where the sun is now; null while there are none */
