@@ -55,6 +55,12 @@ import java.lang.reflect.*;
  *   enemy=name     a unit of the other team held to the right of that row, so the row shoots at it (nothing held dies); enemyright=N: that far right of the lamp (before enemy=; 0 = under the middle of the row)
  *   heldshot=F     a shot of the first unit of that row held at the first test lamp, with the share F of its time used up (0 = just fired .. 1)
  *   face=N         hold the units of that row turned to N degrees (0 = right, 90 = up)      facestep=M  each one M degrees further than the one before
+ *   spin=N         turn the units of that row by N degrees a tick (from face=)      fly=F:S  give them a speed: F of their top speed
+ *                  forwards and S of it to their left (they stay where they are held; only what goes by the speed shows it)
+ *   unitcolors=true  report for every unit of the game the colour its sprite is marked with besides grey and the orange of
+ *                  the team cell (the green of the support units, the purple of others), as "name = rrggbb" (run without the shader mod)
+ *   landing=F      play the landing of the player's core and hold it at the share F of its way down (0 = high up .. 1 = down);
+ *                  the camera goes where the game puts it      landing=off  ends it
  *   stride=N       hold the two-legged units of that row at the point N of their walk (0 .. 4 strides), so their legs show
  *   unitkit=a+b    for those units: report the sprites each is put together from (body, legs, treads, weapons, with sizes and
  *                  places) and save each sprite pixel for pixel as <sprite>.png, plus a flat normal map of its shape to
@@ -94,6 +100,10 @@ public class TestKit extends Mod{
     final FloatSeq crowdAt = new FloatSeq();
     /** face=N: the direction the units of the row are held turned to (NaN = left alone); facestep=M: each one that much further. */
     float face = Float.NaN, faceStep;
+    /** landing=F: the share of its way down the landing of the core is held at (NaN = no landing). */
+    float landing = Float.NaN;
+    /** spin=N: degrees a tick the units of the row are turned by; fly=F:S: the speed they are given, forwards and to the left, as shares of their top speed. */
+    float spin = Float.NaN, flyForward = Float.NaN, flySide;
     /** stride=N: where in their walk the two-legged units of the row are held (NaN = left alone). */
     float stride = Float.NaN;
     /** How far below the lamp the row is, world units (crowdbelow=N, before crowd=). */
@@ -156,6 +166,11 @@ public class TestKit extends Mod{
             Vars.control.playMap(map, map.applyRules(Gamemode.sandbox));
             Events.run(Trigger.preDraw, () -> {
                 if(camSet) Core.camera.position.set(camX, camY);
+                if(!Float.isNaN(landing)){
+                    var core = Vars.player.team().core();
+                    // the game counts the landing down from its full time; held at the same moment every frame
+                    if(core != null) arc.util.Reflect.set(mindustry.core.Renderer.class, Vars.renderer, "landTime", core.launchDuration() * Math.max(1f - landing, 0.004f));
+                }
                 // conveyors pick their animation frame from this clock while they are drawn
                 if(holdTime >= 0f) Time.time = holdTime;
                 if(holdSide) holdItemsAtDrill();
@@ -166,6 +181,13 @@ public class TestKit extends Mod{
                         if(!Float.isNaN(face)){
                             crowd.get(c).rotation = face + c * faceStep;
                             if(crowd.get(c) instanceof mindustry.gen.Mechc mech) mech.baseRotation(face + c * faceStep);
+                        }
+                        if(!Float.isNaN(spin)){
+                            crowd.get(c).rotation = (Float.isNaN(face) ? 90f : face) + c * faceStep + Time.time * spin;
+                        }
+                        if(!Float.isNaN(flyForward)){
+                            var held = crowd.get(c);
+                            held.vel.trns(held.rotation, flyForward * held.type.speed, flySide * held.type.speed);
                         }
                         if(!Float.isNaN(stride) && crowd.get(c) instanceof mindustry.gen.Mechc mech) mech.walkTime(stride * crowd.get(c).type.mechStride);
                     }
@@ -322,8 +344,10 @@ public class TestKit extends Mod{
                 case "flicker" -> flickerShot = Boolean.parseBoolean(v);
                 case "dark" -> {
                     // the map rule that turns on the game's own lighting (dark maps); test profile only
-                    Vars.state.rules.lighting = Boolean.parseBoolean(v);
-                    Vars.state.rules.ambientLight.set(0.02f, 0.02f, 0.06f, 0.78f);
+                    // dark=true / false, or dark=0.95: how dark (the share of light the darkness takes away; true = 0.78)
+                    boolean number = !v.equals("true") && !v.equals("false");
+                    Vars.state.rules.lighting = number || Boolean.parseBoolean(v);
+                    Vars.state.rules.ambientLight.set(0.02f, 0.02f, 0.06f, number ? Float.parseFloat(v) : 0.78f);
                 }
                 case "blocks" -> placeBlocks();
                 case "shore" -> placeShore();
@@ -375,6 +399,23 @@ public class TestKit extends Mod{
                 case "face" -> face = Float.parseFloat(v);
                 case "facestep" -> faceStep = Float.parseFloat(v);
                 case "stride" -> stride = Float.parseFloat(v);
+                case "landing" -> {
+                    var core = Vars.player.team().core();
+                    if(v.equals("off") || core == null){
+                        if(core == null) line("  no core to land");
+                        if(!Float.isNaN(landing)) arc.util.Reflect.set(mindustry.core.Renderer.class, Vars.renderer, "landTime", 0.001f);
+                        landing = Float.NaN;
+                    }else{
+                        if(Float.isNaN(landing)) Vars.renderer.showLanding(core);
+                        landing = Float.parseFloat(v);
+                        camSet = false;
+                    }
+                }
+                case "spin" -> spin = Float.parseFloat(v);
+                case "fly" -> {
+                    flyForward = Float.parseFloat(v.split(":")[0]);
+                    flySide = v.contains(":") ? Float.parseFloat(v.split(":")[1]) : 0f;
+                }
                 case "unitkit" -> unitKit(v);
                 case "heldshot" -> heldShot = Float.parseFloat(v);
                 case "enemy" -> {
@@ -390,6 +431,7 @@ public class TestKit extends Mod{
                 case "sprites" -> dumpSprites(v);
                 case "turretlist" -> listTurrets();
                 case "weaponlist" -> listWeapons();
+                case "unitcolors" -> unitColors();
                 case "zoom" -> {
                     // closer than the game lets a player go (for looking at single pixels of a sprite)
                     if(Integer.parseInt(v) > Vars.renderer.maxZoomInGame) Vars.renderer.maxZoom = Vars.renderer.maxZoomInGame = Integer.parseInt(v);
@@ -1244,6 +1286,57 @@ public class TestKit extends Mod{
                 }catch(Throwable t){
                     line("  sprite " + sprite + ": " + t);
                 }
+            }
+        }
+    }
+
+    /**
+     * unitcolors=true: the colour each unit's body sprite is marked with. Pixels that are clearly coloured and bright
+     * are sorted by hue into twelve bins; the orange, red and yellow of the team cell and of warning stripes (hue below
+     * 50 degrees or above 345) do not count. The fullest bin wins if it holds at least 1.2% of the sprite; the line
+     * gives the colour used most in it. A unit without such a colour is listed with a dash.
+     */
+    void unitColors(){
+        for(mindustry.type.UnitType type : Vars.content.units()){
+            if(type.minfo.mod != null || !type.region.found()) continue;
+            try{
+                Pixmap p = Core.atlas.getPixmap(type.region).crop();
+                int opaque = 0;
+                int[] count = new int[12];
+                @SuppressWarnings("unchecked")
+                ObjectIntMap<Integer>[] used = new ObjectIntMap[12];
+                for(int i = 0; i < 12; i++) used[i] = new ObjectIntMap<>();
+                float[] hsb = new float[3];
+                for(int x = 0; x < p.width; x++){
+                    for(int y = 0; y < p.height; y++){
+                        int c = p.get(x, y);
+                        if((c & 0xff) < 250) continue;
+                        opaque++;
+                        java.awt.Color.RGBtoHSB(c >>> 24, c >>> 16 & 0xff, c >>> 8 & 0xff, hsb);
+                        float hue = hsb[0] * 360f;
+                        if(hsb[1] < 0.3f || hsb[2] < 0.5f || hue < 50f || hue > 345f) continue;
+                        int bin = Math.min((int)(hue / 30f), 11);
+                        count[bin]++;
+                        used[bin].increment(c, 0, 1);
+                    }
+                }
+                p.dispose();
+                int win = 0;
+                for(int i = 1; i < 12; i++) if(count[i] > count[win]) win = i;
+                if(count[win] < Math.max(12, opaque * 0.012f)){
+                    line("unitcolor " + type.name + " = -");
+                    continue;
+                }
+                int most = 0, mostCount = -1;
+                for(var e : used[win].entries()){
+                    if(e.value > mostCount){
+                        mostCount = e.value;
+                        most = e.key;
+                    }
+                }
+                line("unitcolor " + type.name + " = " + String.format("%06x", most >>> 8) + "   # " + count[win] + " of " + opaque + " pixels, hue " + win * 30 + ".." + (win * 30 + 30));
+            }catch(Throwable t){
+                line("unitcolor " + type.name + ": " + t);
             }
         }
     }

@@ -21,7 +21,7 @@ public class ShaderMod extends Mod{
     // found, not listed: the slider appears once a thorium reactor has blown up in view (LightTap.reactorBoost)
     reactorFun = "mshaders-reactor-fun", reactorFound = "mshaders-reactor-found",
     glintOn = "mshaders-glint", glintStrength = "mshaders-glint-strength", glintBand = "mshaders-glint-band",
-    normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsHeight = "mshaders-normals-height", normalsOwnLight = "mshaders-normals-own-light",
+    normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsHeight = "mshaders-normals-height", normalsOwnLight = "mshaders-normals-own-light", boostersOn = "mshaders-boosters", boostersTint = "mshaders-boosters-tint",
     postOn = "mshaders-post", vignette = "mshaders-vignette", saturation = "mshaders-saturation", contrast = "mshaders-contrast", warmth = "mshaders-warmth";
 
     public final WaterFx water = new WaterFx();
@@ -43,13 +43,21 @@ public class ShaderMod extends Mod{
             shadowOn, true, shadowLength, 15, shadowStrength, 70, shadowCycle, 4, shadowQuality, 80, sunAngle, 45,
             lightsOn, true, lightsStrength, 100, darkDepth, 50, lightsColor, 100, lightsMoving, 100, lightsMax, 64, lightsAir, 100, lightsGround, 100, lightsUnits, true, lightsUnitsDepth, 65,
             glintOn, true, glintStrength, 100, glintBand, 100,
-            normalsOn, true, normalsStrength, 100, normalsHeight, true, normalsOwnLight, false,
+            normalsOn, true, normalsStrength, 100, normalsHeight, true, normalsOwnLight, false, boostersOn, true, boostersTint, true,
             postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15
         );
 
         // the sprites this mod replaces get back the dark outline the game's own sprites have (turret heads, mass driver)
         int outlines = Outlines.apply();
         if(outlines > 0) Log.info("[mshaders] outlines painted around @ replaced sprite(s)", outlines);
+
+        // the engines of units as flames instead of two discs
+        try{
+            int engines = Boosters.install();
+            Log.info("[mshaders] engines drawn as streaks: @, @ unit type(s) with a streak colour of their own", engines, Boosters.colours());
+        }catch(Throwable t){
+            Log.err("[mshaders] engines stay as the game draws them", t);
+        }
 
         // the scene registers its frame hooks first, so its buffer is open before the others run
         scene.init();
@@ -108,6 +116,10 @@ public class ShaderMod extends Mod{
             f.check(normalsOn, true);
             f.slider(normalsStrength, 100, 0, 200, 5, i -> i + "%");
             f.check(normalsHeight, true);
+
+            f.section("units");
+            f.check(boostersOn, true);
+            f.check(boostersTint, true);
             f.check(normalsOwnLight, false);
 
             f.section("post");

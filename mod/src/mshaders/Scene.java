@@ -489,6 +489,8 @@ public class Scene{
 
     /** Trigger.draw fires inside Renderer.draw() while the frame's layers are being queued. */
     private void queue(){
+        // the engines of a core that is coming down (drawn into the frame as the game draws its own, whatever else is on)
+        Boosters.queueLanding();
         if(!capturing) return;
         // BlockRenderer.drawShadows() runs at Layer.block - 1; right after it its texture is still in Tmp.tr1
         if(wantLight || wantGlint) Draw.draw(Layer.block - 1f + 0.0005f, grabMask);
