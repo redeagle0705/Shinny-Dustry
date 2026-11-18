@@ -12,3 +12,5 @@
 /tools/local.ps1
 # downloaded tools (the Android dex converter), see tools/build.ps1
 /tools/vendor/
+# pictures deploy.ps1 found in the game's mod folder and kept before overwriting it
+/rescued/

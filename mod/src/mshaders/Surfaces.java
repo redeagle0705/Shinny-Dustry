@@ -59,6 +59,14 @@ import mindustry.world.draw.*;
  *                 pixel is as glossy as the block is as a whole (Gloss.java: what it is built from). It goes along
  *                 with the sprite's normal or height map and does nothing without one.
  * (The data folder comes first so a picture can be tried without rebuilding the mod.)
+ *
+ * DRAWING WITH THE GAME OPEN: those folders are looked at twice a second, and when a picture in them has been saved,
+ * added or removed, all maps are read again - what is on screen changes within a second or two, without a restart.
+ * One more folder can be watched: a folder laid out like the mod's own assets (normals/, heightmaps/, gloss/,
+ * sprites-override/), named in a one-line file "mshaders-watch.txt" in the data folder or in the mod's folder
+ * ({@link #watched}). Its pictures come before the mod's own - unless the mod's own copy was saved later: of those
+ * two, the one saved last counts. (The data folder still comes before both.) The maker's deploy script puts that file there, pointing at the folder the
+ * pictures are drawn in; the jar that is published has none.
  * Sprite names: the block's name for its base; for a drill also <name>-rotator and <name>-top; for a mass driver
  * <name>-base for the base and <name> for the head; for a turret (also repair point, build tower, tractor beam, point
  * defence) the name of the base sprite the game uses - block-<size> for nearly all of them, one picture serving every
@@ -160,7 +168,12 @@ public class Surfaces{
             load();
         }catch(Throwable t){
             layers.clear();
+            looks.clear();
             Log.err("[mshaders] normal and height maps unreadable, blocks keep their painted shading", t);
+        }
+        try{
+            read = last = holding();
+        }catch(Throwable ignored){
         }
     }
 
@@ -186,9 +199,135 @@ public class Surfaces{
     }
 
     private static Fi find(String folder, String name){
+        // the player's own picture in the data folder comes before everything
         Fi file = Vars.dataDirectory.child("mshaders-" + folder).child(name + ".png");
-        if(!file.exists()) file = Vars.tree.get(folder + "/" + name + ".png");
+        if(file.exists()) return file;
+        file = Vars.tree.get(folder + "/" + name + ".png");
+        Fi watch = watched();
+        if(watch != null){
+            // The watched folder against the mod's own copy of the same picture: the one saved last counts. (The
+            // watched folder always came first at the start - and a gloss map the maker had saved into the game's
+            // mod folder was passed over for an older one in the watched folder: "I painted it black and it still
+            // shines.") A deploy copies the watched folder's pictures with their dates, so untouched copies tie, and
+            // the watched folder wins a tie.
+            Fi drawn = watch.child(folder).child(name + ".png");
+            if(drawn.exists() && !(file.exists() && file.lastModified() > drawn.lastModified() + 3000L)) return drawn;
+        }
         return file.exists() ? file : null;
+    }
+
+    private static Fi watchDir;
+    private static boolean watchLooked;
+
+    /**
+     * The folder pictures are drawn in while the game is open, or null: the folder named in the first line of
+     * "mshaders-watch.txt" in the game's data folder, else of the file of that name in this mod's own folder.
+     */
+    public static Fi watched(){
+        if(watchLooked) return watchDir;
+        watchLooked = true;
+        try{
+            Fi note = Vars.dataDirectory.child("mshaders-watch.txt");
+            if(!note.exists()){
+                mindustry.mod.Mods.LoadedMod mod = Vars.mods.getMod(ShaderMod.class);
+                note = mod == null ? null : mod.root.child("mshaders-watch.txt");
+            }
+            if(note != null && note.exists()){
+                String path = note.readString().replace("\uFEFF", "").split("\n")[0].trim();
+                Fi dir = path.isEmpty() ? null : new Fi(path);
+                if(dir != null && dir.exists() && dir.isDirectory()){
+                    watchDir = dir;
+                    Log.info("[mshaders] pictures are also read from @, and read again when they change", dir.absolutePath());
+                }
+            }
+        }catch(Throwable t){
+            Log.err("[mshaders] the folder to watch could not be found", t);
+        }
+        return watchDir;
+    }
+
+    /** When the folders are next looked at (milliseconds), what they held when the maps were last read, and what they held at the last look. */
+    private long nextLook;
+    private long read = Long.MIN_VALUE, last = Long.MIN_VALUE;
+
+    /** What the folders of maps hold right now, as one number: the names, sizes and dates of the pictures in them. */
+    private static long holding(){
+        long sum = 17;
+        Fi watch = watched();
+        // the mod's own folder too, where it is a folder and not a jar: a picture saved there counts as well (find)
+        mindustry.mod.Mods.LoadedMod mod = watch == null ? null : Vars.mods.getMod(ShaderMod.class);
+        Fi own = mod == null || mod.root == null || !mod.file.isDirectory() ? null : mod.root;
+        for(String folder : new String[]{folders[byNormal], folders[byHeight], glossFolder}){
+            for(int place = 0; place < 3; place++){
+                Fi dir = place == 0 ? (watch == null ? null : watch.child(folder)) : place == 1 ? Vars.dataDirectory.child("mshaders-" + folder) : (own == null ? null : own.child(folder));
+                if(dir == null || !dir.exists() || !dir.isDirectory()) continue;
+                for(Fi file : dir.list()){
+                    if(!file.extEquals("png")) continue;
+                    sum = sum * 31 + file.name().hashCode();
+                    sum = sum * 31 + file.lastModified();
+                    sum = sum * 31 + file.length();
+                }
+            }
+        }
+        return sum;
+    }
+
+    /**
+     * To be called every frame: twice a second it looks whether a map has been saved, added or removed, and if so
+     * reads all maps again. A picture that is being written right now differs from look to look, so the folders must
+     * hold the same at two looks in a row before anything is read.
+     * @return true if the maps were just read again
+     */
+    public boolean watch(){
+        long now = Time.millis();
+        if(now < nextLook) return false;
+        nextLook = now + 500;
+        long holds;
+        try{
+            holds = holding();
+        }catch(Throwable t){
+            return false;
+        }
+        if(holds == read || holds != last){
+            last = holds;
+            return false;
+        }
+        read = holds;
+        reload();
+        return true;
+    }
+
+    /** Reads all maps again now, whatever the folders held before (the "read pictures again" button). */
+    public void reloadNow(){
+        try{
+            read = last = holding();
+        }catch(Throwable ignored){
+        }
+        reload();
+    }
+
+    /** How many normal maps, height maps and gloss maps were read last. */
+    public int[] counts(){
+        return new int[]{found[byNormal], found[byHeight], glossMaps};
+    }
+
+    private void reload(){
+        Texture old = atlas;
+        layers.clear();
+        looks.clear();
+        atlas = null;
+        filtered = null;
+        try{
+            load();
+        }catch(Throwable t){
+            // a picture that cannot be read (half saved, not a picture): nothing is shaded until the next change
+            for(Pixmap map : maps) map.dispose();
+            maps.clear();
+            layers.clear();
+            looks.clear();
+            Log.err("[mshaders] maps could not be read again", t);
+        }
+        if(old != null) old.dispose();
     }
 
     /**
@@ -360,6 +499,10 @@ public class Surfaces{
     private static final int unitWeapons = 4;
 
     private void load(){
+        maps.clear();
+        known.clear();
+        found[byNormal] = found[byHeight] = 0;
+        glossMaps = 0;
         Seq<Block> owners = new Seq<>();
         IntSeq kinds = new IntSeq(), slots = new IntSeq(), which = new IntSeq();
         Seq<UnitType> unitOwners = new Seq<>();

@@ -4,6 +4,7 @@
 uniform sampler2D u_texture;   // the light picture: rgb = light colour, a = amount of light; blocks stop the light
 uniform sampler2D u_open;      // the same lights with nothing in their way
 uniform sampler2D u_air;       // the units in the air, full size: a = how much of the pixel one covers
+uniform float u_plain;         // 1: bright maps - both pictures are plain sums of light (rgb); 0: dark maps - rgb = colour, a = amount
 
 varying vec2 v_texCoords;
 
@@ -12,8 +13,10 @@ void main(){
     float air = texture2D(u_air, v_texCoords).a;
     if(air > 0.003){
         vec4 open = texture2D(u_open, v_texCoords);
-        // never less light than the ground has: beams and the lights beyond the limit are only in the first picture
-        if(open.a > lit.a) lit = mix(lit, open, clamp(air, 0.0, 1.0));
+        // never less light than the ground has: beams, the glow of the ground and the lights beyond the limit are only
+        // in the first picture
+        if(u_plain > 0.5) lit = mix(lit, max(lit, open), clamp(air, 0.0, 1.0));
+        else if(open.a > lit.a) lit = mix(lit, open, clamp(air, 0.0, 1.0));
     }
     gl_FragColor = lit;
 }

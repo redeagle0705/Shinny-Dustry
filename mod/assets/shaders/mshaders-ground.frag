@@ -37,6 +37,7 @@ uniform vec2 u_sunDir;       // direction towards the sun on the ground, length 
 varying vec2 v_texCoords;
 
 const vec2 wind = vec2(0.94, 0.34);   // the wind blows towards the right and a little up
+const float SOFT_RELIEF = 0.45;       // how much of the relief sand and grass keep
 
 float noise(vec2 p){
     return texture2D(u_noise, p).r;
@@ -114,8 +115,14 @@ void main(){
         // not across the edge of the layer, where the buffer is empty
         if(lit.a > 0.99 && shaded.a > 0.99){
             float rise = dot(lit.rgb - shaded.rgb, vec3(0.299, 0.587, 0.114));
+            // Sand and grass get less of it. Their tiles are covered in small marks - streaks of sand, blades of grass
+            // - and with every one of them standing up at full strength the ground read as a field of pebbles
+            // (a friend of the maker's: "less shadow on grass and sand"). They are soft ground: a hint is enough.
+            // (Shading the sand as dunes instead was tried and taken out again: among ground that is flat everywhere
+            // else, the sand alone seemed to rise.)
+            float keep = (kind > 1.5 && kind < 2.5) || (kind > 4.5 && kind < 5.5) ? SOFT_RELIEF : 1.0;
             // smaller than a screen pixel it would only be noise: fade out when zoomed far out
-            color *= 1.0 + clamp(-rise * 2.2, -0.22, 0.28) * u_relief * (1.0 - smoothstep(0.45, 1.0, u_px));
+            color *= 1.0 + clamp(-rise * 2.2, -0.22, 0.28) * u_relief * keep * (1.0 - smoothstep(0.45, 1.0, u_px));
         }
     }
 

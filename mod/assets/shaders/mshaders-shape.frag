@@ -33,8 +33,10 @@ uniform float u_aimed;         // 1 when u_aim holds this frame's light directio
 uniform float u_glint;         // metal glint strength, 0 = off
 uniform float u_band;          // strength of the drifting sun band
 uniform float u_time;          // seconds
+uniform float u_metal;         // how much the top of the gloss scale is shaded as metal: 0 = polished only, 1 = metal
 
 uniform float u_own;           // 1 while units are shaded and a unit is not to be lit by the glow it carries itself
+uniform float u_coreOwn;       // 1 while buildings are shaded and a core is not to be lit by its own light
 uniform int u_count;           // light sources of this frame
 uniform vec4 u_lights[MAX_LIGHTS];     // x, y, radius, opacity
 uniform vec4 u_colors[MAX_LIGHTS];     // their colours
@@ -60,6 +62,31 @@ const float LEAN = 4.0;        // the largest sideways-per-height u_glowDir can 
 const float HEIGHT_BLUE = 0.3;
 const float NORMAL_BLUE = 0.6;
 const float BETWEEN = 0.45;
+
+// Where on the gloss scale metal begins; at 1 (white in a gloss map) a face is metal all the way. Below this a face is
+// "polished": a matt body with a shine laid over it - which, however strong, reads as glazed pottery and not as metal
+// (the maker, of faces painted white: "ceramic with a coat of polish"). No block gets this high by what it is built
+// from (Gloss.java: titanium 0.85), so it takes a gloss map to say "this is metal".
+const float METAL_FROM = 0.85;
+// Metal is darker than it is painted wherever it mirrors nothing bright, and bright in its own colour where it does.
+// This pass can only multiply what is painted, and a light colour runs out of room soon (gold went white over whole
+// faces): so the body of a metal face is taken down a little, and the top of the range is squeezed - the bright faces
+// keep their colour, and only the small mirror patches go all the way to white.
+const float METAL_BODY = 0.86;
+const float METAL_TOP = 1.3;
+
+// How bright the world is that a face of metal mirrors into the eye, a flat face = 1. Metal has no colour of its own
+// that every light brings out the same: it shows what stands around it, and so its faces differ far more than those
+// of a matt body, and change at once from one face to the next. The eye looks straight down, so the mirrored view
+// swings twice as far as the face leans: a flat face shows the sky overhead, one at 45 degrees the horizon, a steeper
+// one the ground. Towards the sun the world is bright right down to the horizon, away from it dark.
+float mirrored(vec3 n, vec2 sunDir){
+    vec2 r = 2.0 * n.z * n.xy;              // sideways: 0 on a flat face, 1 at 45 degrees
+    float e = 2.0 * n.z * n.z - 1.0;        // upwards: 1 = straight up, 0 = the horizon, below 0 = the ground
+    float s = dot(r, sunDir);
+    float ground = 1.0 - smoothstep(-0.8, 0.1, e);
+    return max(1.0 + 0.75 * s - 0.15 * (1.0 - max(e, 0.0)) * (1.0 - abs(s)) - 0.35 * ground, 0.1);
+}
 
 // The height at another place of the picture, for a pixel that came from a height map; "own" where there is no height
 // to read - nothing drawn, a block with a normal map, an item lying on the belt. So the outline of a block does not
@@ -120,6 +147,10 @@ void main(){
     float around = 0.55 * u_day + 0.06, sun = 0.45 * u_day;
     vec3 level = vec3(around + sun);
     vec3 got = vec3(around + sun * max(dot(n, vec3(u_sunDir * 0.7071, 0.7071)), 0.0) / 0.7071);
+    // The same for a face of metal ("hard" = what it gets), kept beside the other and mixed in by how much of a metal
+    // the pixel is.
+    float metal = clamp(smoothstep(METAL_FROM, 1.0, gloss) * u_metal, 0.0, 2.0);
+    vec3 hard = vec3((around + sun) * mirrored(n, u_sunDir));
     // Gloss, as numbers the lighting can use:
     //   keen, much   the soft sheen every block had before there was gloss: how tight it is (1/4 on matt, 1 at half,
     //                4 on polished metal) and how much of it there is (0, 1, 2);
@@ -144,6 +175,16 @@ void main(){
             if(body > 0.5) strength *= smoothstep(body * 1.7 + 2.0, body * 2.3 + 6.0, dist);
             if(strength <= 0.0) continue;
         }
+        // The same for a core: its light sits in its middle, and lit it from inside - every face turned to the
+        // middle bright, every face turned outwards dark. A light that sits in a core (Scene.lampCode: 100 and up,
+        // below 1000; the last two digits = half the core's diagonal in tiles + 0.3) leaves out the square the core
+        // stands on. Everything around the core it lights as before.
+        if(u_coreOwn > 0.5 && u_colors[i].a >= 100.0 && u_colors[i].a < 1000.0){
+            float reach = (mod(u_colors[i].a, 100.0) - 0.3) / 0.7072 * 4.0;   // half the side of the core, world units
+            vec2 away = abs(world - l.xy);
+            strength *= smoothstep(reach - 1.0, reach + 0.5, max(away.x, away.y));
+            if(strength <= 0.0) continue;
+        }
         // the glow of a flying unit hangs "high" world units up (u_colors a = 1000 + height): a wider, evener, fainter
         // pool, as in mshaders-light.frag, and it falls on the block more from above
         // u_colors a: 1000 + height + 100 * (radius of the unit the light hangs on, whole units) - Scene.pickLights
@@ -159,8 +200,14 @@ void main(){
         // falls almost straight down, far from it almost sideways
         vec3 from = normalize(vec3(d, 10.0 + 0.08 * l.z + high));
         vec3 hue = u_colors[i].rgb / max(max(u_colors[i].r, max(u_colors[i].g, u_colors[i].b)), 0.05);
-        got += hue * (weight * min(max(dot(n, from), 0.0) / from.z, 2.2));
+        float facing = max(dot(n, from), 0.0) / from.z;
+        got += hue * (weight * min(facing, 2.2));
         level += hue * weight;
+        // metal: a face turned to the lamp throws far more of it at the eye, one turned a little away far less
+        if(metal > 0.003){
+            facing = min(facing, 1.65);
+            hard += hue * (weight * facing * facing);
+        }
         // the eye looks straight down: a face mirrors the lamp into it where it points halfway between the two
         if(mirror > 0.003) spark += hue * (weight * pow(max(dot(n, normalize(from + vec3(0.0, 0.0, 1.0))), 0.0), tight));
     }
@@ -177,12 +224,14 @@ void main(){
             float side = (n.x > 0.0 ? n.x * pull.r : -n.x * pull.g) + (n.y > 0.0 ? n.y * pull.b : -n.y * pull.a);
             vec3 hue = g.rgb / max(max(g.r, max(g.g, g.b)), 0.004);
             got += hue * (weight * min(max(n.z + side, 0.0), 2.2));
+            hard += hue * (weight * min(max(n.z + side, 0.0), 2.2));
             level += hue * weight;
         }
     }
     // A polished face throws little light back in all directions and much in one: its light and dark sides lie
     // further apart than those of a matt face.
     vec3 factor = 1.0 + (got / level - 1.0) * u_shape * mix(0.85, 1.35, gloss);
+    if(metal > 0.003) factor = max(mix(factor, (1.0 + (hard / level - 1.0) * u_shape) * METAL_BODY, metal), vec3(0.0));
     // Relief from a height map is small - an arrow one step above its belt. Next to a lamp on a dark map its far side
     // would get almost nothing and come out black, a dark smear beside every arrow. Something that low is still lit
     // by what the belt around it throws back, so it never drops below this share of a flat face's light.
@@ -219,7 +268,16 @@ void main(){
         float sky = pow(wave, mix(3.0, 12.0, gloss)) + 0.45 * pow(0.5 + 0.5 * sin((along + 0.3) * 6.2832), 60.0) * max(gloss * 2.0 - 1.0, 0.0);
         factor += (sunny * 0.6 + sky * 0.3) * mirror * u_day * u_glint;
         factor += spark * mirror * u_glint * 1.2;
+        if(metal > 0.003){
+            // On metal the sky does not lie on the face as a faint streak: the face IS what it mirrors. A broad bright
+            // bar with one hard edge and one that fades, the face between the bars darker than it is painted - sheet
+            // metal as it is drawn. It slides and breaks at the edges as the streak does.
+            float w = fract(along * 0.62 + 0.15);
+            float bar = smoothstep(0.0, 0.07, w) * (1.0 - smoothstep(0.07, 0.62, w));
+            factor *= 1.0 + (bar * 0.55 - 0.16) * min(metal, 1.5) * (0.25 + 0.75 * u_day) * min(u_glint, 1.5);
+        }
     }
+    if(metal > 0.003) factor = mix(factor, min(factor, METAL_TOP + (factor - METAL_TOP) * 0.4), min(metal, 1.0));
     // as much of it as the map covers this pixel
     factor = mix(vec3(1.0), factor, clamp(m.a, 0.0, 1.0));
     gl_FragColor = vec4(clamp(factor, 0.0, 2.0) * 0.5, 1.0);

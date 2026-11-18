@@ -61,6 +61,12 @@ import java.lang.reflect.*;
  *                  the team cell (the green of the support units, the purple of others), as "name = rrggbb" (run without the shader mod)
  *   landing=F      play the landing of the player's core and hold it at the share F of its way down (0 = high up .. 1 = down);
  *                  the camera goes where the game puts it      landing=off  ends it
+ *   savefile=FROM>TO  copy that file there now (as if a picture had just been saved while the game is open)
+ *   click=TEXT     press the button on screen that is named TEXT, or whose text holds TEXT (spaces as _)
+ *   onwalls=true   move the row of units (crowd=) onto the nearest natural walls that border open ground, and the camera there
+ *   kit=a+b        save those atlas sprites pixel for pixel as <sprite>.png, and the shape of each filled with the colour
+ *                  of a flat face as <sprite>-flat.png - what there is to draw over (run without the shader mod)
+ *   open=CLASS     make a dialog of that class (of any mod) and show it, e.g. open=mshaders.EngineDialog
  *   stride=N       hold the two-legged units of that row at the point N of their walk (0 .. 4 strides), so their legs show
  *   unitkit=a+b    for those units: report the sprites each is put together from (body, legs, treads, weapons, with sizes and
  *                  places) and save each sprite pixel for pixel as <sprite>.png, plus a flat normal map of its shape to
@@ -399,6 +405,75 @@ public class TestKit extends Mod{
                 case "face" -> face = Float.parseFloat(v);
                 case "facestep" -> faceStep = Float.parseFloat(v);
                 case "stride" -> stride = Float.parseFloat(v);
+                case "close" -> arc.util.Timer.schedule(() -> {
+                    // close=SECONDS: closes the dialog that is open, that long after the shot began
+                    if(Core.scene.getDialog() != null) Core.scene.getDialog().hide();
+                }, Float.parseFloat(v));
+                case "open" -> {
+                    try{
+                        Object made = Vars.mods.mainLoader().loadClass(v).getDeclaredConstructor().newInstance();
+                        ((arc.scene.ui.Dialog)made).show();
+                        line("  opened " + v);
+                    }catch(Throwable t){
+                        line("  could not open " + v + ": " + t);
+                    }
+                }
+                case "kit" -> {
+                    for(String sprite : v.split("[+]")){
+                        try{
+                            var region = Core.atlas.find(sprite);
+                            if(!region.found()){
+                                line("  sprite " + sprite + ": not in atlas");
+                                continue;
+                            }
+                            Pixmap p = Core.atlas.getPixmap(region).crop();
+                            PixmapIO.writePng(new Fi(outDir).child(sprite + ".png"), p);
+                            Pixmap flat = new Pixmap(p.width, p.height);
+                            ObjectIntMap<Integer> used = new ObjectIntMap<>();
+                            for(int x = 0; x < p.width; x++){
+                                for(int y = 0; y < p.height; y++){
+                                    if((p.get(x, y) & 0xff) < 128) continue;
+                                    flat.set(x, y, 0x8080ffff);
+                                    used.increment(p.get(x, y), 0, 1);
+                                }
+                            }
+                            PixmapIO.writePng(new Fi(outDir).child(sprite + "-flat.png"), flat);
+                            java.util.List<Integer> top = new java.util.ArrayList<>();
+                            for(var e : used.entries()) top.add(e.key);
+                            top.sort((c1, c2) -> used.get(c2, 0) - used.get(c1, 0));
+                            StringBuilder colours = new StringBuilder();
+                            for(int i = 0; i < Math.min(5, top.size()); i++) colours.append(String.format(" #%06x", top.get(i) >>> 8));
+                            line("  sprite " + sprite + " " + p.width + "x" + p.height + ", " + top.size() + " colours, most used:" + colours);
+                            flat.dispose();
+                            p.dispose();
+                        }catch(Throwable t){
+                            line("  sprite " + sprite + ": " + t);
+                        }
+                    }
+                }
+                case "onwalls" -> ontoWalls();
+                case "click" -> {
+                    // a moment later: a dialog opened by the same shot has built itself by then. click=NAME@SECONDS
+                    // presses it that long after the shot began (several presses in one shot, one after another).
+                    String target = v.contains("@") ? v.substring(0, v.indexOf('@')) : v;
+                    float after = v.contains("@") ? Float.parseFloat(v.substring(v.indexOf('@') + 1)) : 0.3f;
+                    String wanted = target.replace('_', ' ');
+                    arc.util.Timer.schedule(() -> {
+                        arc.scene.Element hit = Core.scene.root.find(target);
+                        if(hit == null) hit = Core.scene.root.find(e -> e instanceof arc.scene.ui.TextButton b && b.getText().toString().contains(wanted));
+                        if(hit instanceof arc.scene.ui.Button b){
+                            b.fireClick();
+                            line("  pressed the button '" + (b instanceof arc.scene.ui.TextButton t && !t.getText().toString().isEmpty() ? target : target) + "'");
+                        }else{
+                            line("  no button with the name or text '" + wanted + "'");
+                        }
+                    }, after);
+                }
+                case "savefile" -> {
+                    String[] ends = v.split(">", 2);
+                    new Fi(ends[0]).copyTo(new Fi(ends[1]));
+                    line("  copied " + new Fi(ends[0]).name() + " to " + ends[1]);
+                }
                 case "landing" -> {
                     var core = Vars.player.team().core();
                     if(v.equals("off") || core == null){
@@ -453,6 +528,14 @@ public class TestKit extends Mod{
     void openSettings(String name){
         try{
             SettingsMenuDialog dialog = Vars.ui.settings;
+            // dialog=dev: the game's own developer options (page 3)
+            if(name.equals("dev")){
+                Method page = SettingsMenuDialog.class.getDeclaredMethod("visible", int.class);
+                page.setAccessible(true);
+                page.invoke(dialog, 3);
+                line("  developer options shown with " + dialog.dev.getSettings().map(s -> s.name));
+                return;
+            }
             int i = name.equals("last") ? dialog.getCategories().size - 1 : dialog.getCategories().indexOf(c -> c.name.equalsIgnoreCase(name));
             if(i < 0){
                 line("  settings category not found: " + name);
@@ -1339,6 +1422,54 @@ public class TestKit extends Mod{
                 line("unitcolor " + type.name + ": " + t);
             }
         }
+    }
+
+    /**
+     * onwalls=true: the nearest place to the row of units where natural walls fill everything two tiles around and open
+     * ground lies within four tiles (so the walls are not yet in the black of deep rock); the row is moved there.
+     */
+    void ontoWalls(){
+        if(crowd.isEmpty()) return;
+        int cx = (int)(crowdAt.get(0) / Vars.tilesize), cy = (int)(crowdAt.get(1) / Vars.tilesize);
+        int best = -1;
+        float bestDst = Float.MAX_VALUE;
+        for(int x = 3; x < Vars.world.width() - 3; x++){
+            for(int y = 3; y < Vars.world.height() - 3; y++){
+                float dst = Mathf.dst2(x, y, cx, cy);
+                if(dst >= bestDst) continue;
+                boolean walls = true, open = false;
+                for(int dx = -4; dx <= 4 && walls; dx++){
+                    for(int dy = -4; dy <= 4; dy++){
+                        var tile = Vars.world.tile(x + dx, y + dy);
+                        if(tile == null) continue;
+                        boolean rock = tile.block().isStatic();
+                        if(Math.abs(dx) <= 2 && Math.abs(dy) <= 2 && !rock){
+                            walls = false;
+                            break;
+                        }
+                        if(!rock && tile.build == null && !tile.floor().isLiquid) open = true;
+                    }
+                }
+                if(walls && open){
+                    best = x + y * Vars.world.width();
+                    bestDst = dst;
+                }
+            }
+        }
+        if(best < 0){
+            line("  no natural walls found");
+            return;
+        }
+        float wx = (best % Vars.world.width()) * Vars.tilesize, wy = (best / Vars.world.width()) * Vars.tilesize;
+        float shiftX = wx - crowdAt.get(0), shiftY = wy - crowdAt.get(1);
+        for(int c = 0; c < crowd.size; c++){
+            crowdAt.set(c * 2, crowdAt.get(c * 2) + shiftX);
+            crowdAt.set(c * 2 + 1, crowdAt.get(c * 2 + 1) + shiftY);
+        }
+        camX = wx;
+        camY = wy;
+        camSet = true;
+        line("  row moved onto natural walls at tile " + best % Vars.world.width() + "," + best / Vars.world.width());
     }
 
     /** crowd=a+b+c: one unit of each of those kinds in a row just below the first test lamp (after blocks=true and the like), held there; the camera moves to them. */

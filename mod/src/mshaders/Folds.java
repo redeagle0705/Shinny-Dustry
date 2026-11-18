@@ -59,6 +59,22 @@ class Folds{
         table.pref(new Folded(current, new CheckSetting(name, def, null)));
     }
 
+    /** A button that is shown only while the section is open; its text is "setting.<name>.name". */
+    void button(String name, Runnable pressed){
+        table.pref(new Folded(current, new Setting(name){
+            {
+                // no name: "reset to defaults" then passes this row by
+                this.name = null;
+            }
+
+            @Override
+            public void add(SettingsTable table){
+                table.button(title, Icon.pencil, Styles.flatt, 24f, pressed).minWidth(Math.min(500f, Core.graphics.getWidth() / 1.2f / arc.scene.ui.layout.Scl.scl(1f))).fillX().height(46f).left().padTop(4f);
+                table.row();
+            }
+        }));
+    }
+
     static class Header extends Setting{
         /** The setting that remembers whether this section is open. */
         final String key;
