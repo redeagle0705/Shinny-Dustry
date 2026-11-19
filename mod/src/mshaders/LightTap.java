@@ -109,6 +109,7 @@ public class LightTap extends LightRenderer{
      * unit's place on the map like a lamp standing there - so a wall next to a unit passing overhead threw a long
      * shadow, as if the unit were crawling past it. With a height the light shader lets it shine over blocks
      * (mshaders-light.frag) and normal-mapped blocks are lit more from above (mshaders-shape.frag).
+     * (Set whether or not the mod is listening for lights: the shadows of shots go by it too.)
      */
     public float airHeight = 0f;
 
@@ -144,62 +145,150 @@ public class LightTap extends LightRenderer{
             : unit.isFlying() ? Mathf.clamp(unit.elevation) : 0f;
     }
 
-    /** The shots of units that are off the ground, by where each is in this frame. */
+    /**
+     * How high the shots of turrets and of units on the ground fly, in world units; 0 = on the ground, as the game has
+     * them. Set by Scene every frame from the "light of shots: height" setting.
+     * The game has no heights, yet its shots pass over every wall of their own side (and a turret behind three rows
+     * of walls hits what stands in front of them) - they fly above the walls. Their light did not: reported at the
+     * shot's place on the map, like a lamp standing there, it was cut off by each wall the shot crossed, a wedge of
+     * shadow sweeping round behind every block on the way. (Asked for by the maker: "bullets, missiles and lasers go
+     * over the walls anyway - lift them like the flying units? And a bullet could come down as it nears its range.")
+     */
+    public float shotLevel = 0f;
+
+    /** The shots that are off the ground, by where each is in this frame. */
     private final IntMap<Bullet> shotsAt = new IntMap<>();
+    /**
+     * How high each shot was fired, by its id: above zero from a unit off the ground, below zero (the height, negated)
+     * level from the ground, zero for a shot that is on the ground (firedAt).
+     */
+    private final IntFloatMap tops = new IntFloatMap();
+    /**
+     * Whether each shot started at what fired it (1) or somewhere else (0), by its id. Decided when a shot is first
+     * seen and kept, the map of the frame before handing it on: a unit moves on while its shot is on the way.
+     */
+    private IntIntMap started = new IntIntMap(), startedBefore = new IntIntMap();
     private long shotsFrame = -1;
     /** A light lower than this is on the ground (world units): the light pass treats the two differently, and close to the ground the difference shows as a jump either way. */
     private static final float lowest = 2f;
 
-    /** The shot of a unit off the ground that is exactly at that place; null if there is none. */
-    private Bullet shotAt(float x, float y){
+    private void findShots(){
         long frame = Core.graphics.getFrameId();
-        if(frame != shotsFrame){
-            shotsFrame = frame;
-            shotsAt.clear();
-            for(Bullet b : Groups.bullet){
-                if(b.owner instanceof Unit unit && upOf(unit) > 0f) shotsAt.put(place(b.x, b.y), b);
+        if(frame == shotsFrame) return;
+        shotsFrame = frame;
+        shotsAt.clear();
+        tops.clear();
+        IntIntMap swap = startedBefore;
+        startedBefore = started;
+        started = swap;
+        started.clear();
+        if(airHeight <= 0f && shotLevel <= 0f) return;
+        for(Bullet b : Groups.bullet){
+            int own = startedBefore.get(b.id, -1);
+            if(own < 0) own = b.owner instanceof Posc at && b.owner instanceof mindustry.entities.Sized sized
+                && Mathf.within(b.originX, b.originY, at.getX(), at.getY(), sized.hitSize() * 0.75f + 16f) ? 1 : 0;
+            started.put(b.id, own);
+            float top = firedAt(b, own == 1);
+            if(top != 0f){
+                tops.put(b.id, top);
+                shotsAt.put(place(b.x, b.y), b);
             }
         }
+    }
+
+    /** The shot off the ground that is exactly at that place; null if there is none. */
+    private Bullet shotAt(float x, float y){
+        findShots();
         return shotsAt.isEmpty() ? null : shotsAt.get(place(x, y));
     }
 
     /**
-     * How high a shot leaves its unit, in world units: where the unit's own glow hangs.
-     * The game has no heights: the light of a shot is reported at the shot's place on the map, like a lamp standing
-     * there. So a unit in flight had its glow up in the air (airHeight) and its shots crawling along the ground under
-     * it - cut off by every wall the unit itself shone over.
+     * How high a shot leaves what fired it, in world units (see tops for the sign).
+     * From a unit off the ground: where the unit's own glow hangs. (A unit in flight had its glow up in the air and
+     * its shots crawling along the ground under it - cut off by every wall the unit itself shone over.)
+     * From a turret, or a unit on the ground or lower than that: shotLevel - but only a shot that starts at what fired
+     * it. The pieces a shell bursts into belong to the turret as well, and those start where the shell came down: on
+     * the ground ("own": did this one start at what fired it - see started).
      */
+    private float firedAt(Bullet b, boolean own){
+        float up = b.owner instanceof Unit unit ? upOf(unit) * airHeight : 0f;
+        // (not for a unit that flies, however high that setting is put: its shots do not start above it)
+        boolean flies = b.owner instanceof Unit flier && flier.isFlying();
+        return own && !flies && shotLevel > up ? -shotLevel : up;
+    }
+
+    /** How high that shot was fired: the height, whichever way (tops). */
     private float muzzle(Bullet b){
-        return b.owner instanceof Unit unit ? upOf(unit) * airHeight : 0f;
+        findShots();
+        return Math.abs(tops.get(b.id, 0f));
+    }
+
+    /** Was that shot fired level from the ground (a turret, a unit on the ground) and not down from a unit in the air? */
+    private boolean level(Bullet b){
+        findShots();
+        return tops.get(b.id, 0f) < 0f;
     }
 
     /**
-     * Does that shot stay at the height it was fired at? One that cannot hit anything on the ground does, and so does
-     * one whose unit is, right now, aiming the weapon it came from at something that flies.
+     * Is that shot on its way to something in the air? One that cannot hit anything on the ground is, and so is one
+     * whose unit or turret is, right now, aiming at something that flies (a unit: with the weapon the shot came from).
+     * Fired from the air it stays at the height it was fired at; fired from the ground it climbs.
      */
     private static boolean staysUp(Bullet b){
         if(!b.type.collidesGround) return true;
-        if(!b.type.collidesAir || !(b.owner instanceof Unit unit)) return false;
+        if(!b.type.collidesAir) return false;
+        if(b.owner instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild turret) return turret.target instanceof Unit aimed && aimed.isFlying();
+        if(!(b.owner instanceof Unit unit)) return false;
         for(mindustry.entities.units.WeaponMount mount : unit.mounts){
             if(mount.weapon.bullet == b.type && mount.target instanceof Unit aimed && aimed.isFlying()) return true;
         }
         return false;
     }
 
+    /** The height a shot fired from the ground at something in the air climbs to: where the units in full flight hang. */
+    private float ceilingOf(float from){
+        return Math.max(airHeight > 0f ? airHeight : Scene.airLevel, from);
+    }
+
     /**
-     * How high a shot is right now, in world units. Every other shot comes down on its way: it is on the ground where
-     * it was aimed at (how far along the line from where it was fired to there it has come), at the latest when its
-     * time is up (a bomb does not travel, it falls). Linear - nothing here is a real trajectory.
+     * How high a shot is right now, in world units. Nothing here is a real trajectory - it only has to look like one.
+     * How far the shot has come ("done"): along the line from where it was fired to where it was aimed at, or how much
+     * of its time is up, whichever is more (a bomb does not travel, it falls; a shot nobody aimed has only its time,
+     * which is its range).
+     *   - on its way to something in the air: fired from the air it stays up, fired from the ground it climbs to where
+     *     the flying units hang;
+     *   - fired down from a unit in the air: a straight line to the ground at where it was aimed at;
+     *   - fired level from the ground: it flies on above the walls and sinks the faster the further it has come (as
+     *     anything fired level does: by the square of the way), on the ground where it was aimed at;
+     *   - lobbed (artillery: shots that hit nothing on their way and come down at the end): an arc on top of that,
+     *     a fifth as high as the shot is far, at least one tile and at most six.
      */
     private float shotHeight(Bullet b){
         float top = muzzle(b);
-        if(top <= 0f || staysUp(b)) return top;
-        float done = b.fin();
+        if(top <= 0f) return 0f;
+        boolean level = level(b);
+        if(!level && staysUp(b)) return top;
+        float done = b.fin(), far = b.type.range;
         if(!(b.aimX == -1f && b.aimY == -1f)){
             float ax = b.aimX - b.originX, ay = b.aimY - b.originY, len2 = ax * ax + ay * ay;
-            if(len2 > 64f) done = Math.max(done, ((b.x - b.originX) * ax + (b.y - b.originY) * ay) / len2);
+            if(len2 > 64f){
+                done = Math.max(done, ((b.x - b.originX) * ax + (b.y - b.originY) * ay) / len2);
+                far = Mathf.sqrt(len2);
+            }
         }
-        return top * (1f - Mathf.clamp(done));
+        done = Mathf.clamp(done);
+        if(!level) return top * (1f - done);
+        if(staysUp(b)) return Mathf.lerp(top, ceilingOf(top), done);
+        if(b.type instanceof ArtilleryBulletType || (!b.type.collides && b.type.scaleLife)){
+            return top * (1f - done) + Mathf.clamp(far * 0.2f, 8f, 48f) * 4f * done * (1f - done);
+        }
+        return top * (1f - done * done);
+    }
+
+    /** How high that shot is right now, in world units, for what is drawn of it (ShotShadows); 0 = on the ground. */
+    public float shotHeightOf(Bullet b){
+        float height = shotHeight(b);
+        return height < lowest ? 0f : height;
     }
 
     /** The radius of the unit a light reported at that place sits on; 0 where no unit is. */
@@ -213,7 +302,7 @@ public class LightTap extends LightRenderer{
      * shot there is on its way down from its unit; 0 where neither is.
      */
     private float heightOf(float x, float y){
-        if(airHeight <= 0f) return 0f;
+        if(airHeight <= 0f && shotLevel <= 0f) return 0f;
         findUnits();
         int place = place(x, y);
         if(unitsAt.containsKey(place)) return unitsAt.get(place, 0f) * airHeight;
@@ -390,7 +479,7 @@ public class LightTap extends LightRenderer{
             radius *= Mathf.sqrt(moving);
             opacity = Math.min(opacity * moving, 1f);
         }
-        record(x, y, radius, color, opacity, heightOf(x, y));
+        record(x, y, radius, color, opacity, capture ? heightOf(x, y) : 0f);
         if(gameLighting() && !takeover) super.add(x, y, radius, color, opacity);
     }
 
@@ -423,9 +512,11 @@ public class LightTap extends LightRenderer{
         }
         if(!gameLighting()){
             // the beam of a shot fired by a unit off the ground starts at that unit's height and slants down to the
-            // ground at its far end (or stays up: staysUp)
-            Bullet shot = airHeight > 0f ? shotAt(x, y) : null;
-            float from = shot == null ? 0f : muzzle(shot), to = shot != null && staysUp(shot) ? from : 0f;
+            // ground at its far end (or stays up: staysUp); one fired from the ground runs level above the walls all
+            // its length (or climbs to what flies)
+            Bullet shot = capture && (airHeight > 0f || shotLevel > 0f) ? shotAt(x, y) : null;
+            float from = shot == null ? 0f : muzzle(shot);
+            float to = shot == null ? 0f : level(shot) ? (staysUp(shot) ? ceilingOf(from) : from) : staysUp(shot) ? from : 0f;
             int n = Mathf.clamp((int)(Mathf.dst(x, y, x2, y2) / Math.max(stroke, 8f)) + 1, 1, 6);
             for(int i = 0; i < n; i++){
                 float f = n == 1 ? 0.5f : i / (float)(n - 1), height = Mathf.lerp(from, to, f);
@@ -440,10 +531,12 @@ public class LightTap extends LightRenderer{
     @Override
     public void draw(){
         if(takeover && scene != null){
+            Clock.begin("gamelight");
             try{
                 scene.drawGameLighting(extras);
             }finally{
                 extras.clear();
+                Clock.end();
             }
         }else{
             extras.clear();

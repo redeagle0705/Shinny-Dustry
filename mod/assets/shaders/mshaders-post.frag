@@ -38,6 +38,7 @@ uniform float u_vignette;      // 0 = none, 1 = corners fully dark
 uniform float u_saturation;    // 1 = unchanged
 uniform float u_contrast;      // 1 = unchanged
 uniform float u_warmth;        // 0 = unchanged, + warmer, - cooler
+uniform float u_spare;         // 0 = every colour gets the saturation and contrast above, 1 = colours that are vivid already are spared (set on Erekir only)
 
 varying vec2 v_texCoords;
 
@@ -133,8 +134,21 @@ void main(){
     }
 
     float gray = luma(color);
-    color = mix(vec3(gray), color, u_saturation);
-    color = (color - 0.5) * u_contrast + 0.5;
+    // More saturation and contrast are meant for the muted colours of most maps. Where the picture is vivid already -
+    // all of Erekir, orange rock under the red haze the game lays over that planet (EnvRenderers, Env.scorching) -
+    // they turn it into glowing red (a player: "Erekir is too red"; measured on its first map: the game alone
+    // 149,71,51 on average, with this pass 156,61,36). With u_spare a colour is spared by how vivid it is: no more
+    // saturation than it has, and contrast of its brightness alone (contrast on each of red, green, blue apart pushes
+    // them further from each other = more colour).
+    float top = max(color.r, max(color.g, color.b)), low = min(color.r, min(color.g, color.b));
+    float spare = u_spare * smoothstep(0.35, 0.75, top > 0.001 ? (top - low) / top : 0.0);
+    color = mix(vec3(gray), color, mix(u_saturation, min(u_saturation, 1.0), spare));
+    if(spare > 0.001){
+        float g = luma(color);
+        color = mix((color - 0.5) * u_contrast + 0.5, color * (max((g - 0.5) * u_contrast + 0.5, 0.0) / max(g, 0.001)), spare);
+    }else{
+        color = (color - 0.5) * u_contrast + 0.5;
+    }
     color *= vec3(1.0 + 0.10 * u_warmth, 1.0 + 0.02 * u_warmth, 1.0 - 0.10 * u_warmth);
 
     // oval vignette: 0 in the middle, 1 in the corners

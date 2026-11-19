@@ -39,6 +39,31 @@ public class Occluders{
     private Pixmap glossPixmap;
     private Texture glossTexture;
     private boolean dirty;
+    /**
+     * The tiles changed since the pictures were last sent to the graphics card: the smallest rectangle that holds them.
+     * Only that is sent. (All three pictures used to be sent whole whenever a single block was placed or shot down -
+     * on a busy server several times a second, a map's worth of data each time.)
+     */
+    private int fromX, fromY, toX, toY;
+
+    private void changedAt(int x, int y){
+        if(!dirty){
+            fromX = toX = x;
+            fromY = toY = y;
+        }else{
+            fromX = Math.min(fromX, x);
+            toX = Math.max(toX, x);
+            fromY = Math.min(fromY, y);
+            toY = Math.max(toY, y);
+        }
+        dirty = true;
+    }
+
+    private static void send(Texture texture, Pixmap whole, int x, int y, int w, int h){
+        Pixmap part = whole.crop(x, y, w, h);
+        texture.draw(part, x, y);
+        part.dispose();
+    }
     /** Tiles holding a block that is only sometimes in the way (doors). The game sends no event when one opens or shuts, so these are looked at once a frame. */
     private final IntSeq doors = new IntSeq();
     private long doorsFrame = -1;
@@ -142,7 +167,7 @@ public class Occluders{
         boolean listed = doors.contains(pos);
         if(tile.block().solidifes && !listed) doors.add(pos);
         else if(!tile.block().solidifes && listed) doors.removeValue(pos);
-        dirty = true;
+        changedAt(tile.x, tile.y);
     }
 
     /** @return the texture, brought up to date; null when there is no world or it does not match the loaded map */
@@ -158,14 +183,24 @@ public class Occluders{
                 int now = value(tile);
                 if(pixmap.get(tile.x, tile.y) != now){
                     pixmap.set(tile.x, tile.y, now);
-                    dirty = true;
+                    changedAt(tile.x, tile.y);
                 }
             }
         }
         if(dirty){
-            texture.draw(pixmap);
-            shapeTexture.draw(shapePixmap);
-            glossTexture.draw(glossPixmap);
+            Clock.begin("upload");
+            int w = toX - fromX + 1, h = toY - fromY + 1;
+            if(w * h * 2 >= pixmap.width * pixmap.height){
+                // most of the map: whole
+                texture.draw(pixmap);
+                shapeTexture.draw(shapePixmap);
+                glossTexture.draw(glossPixmap);
+            }else{
+                send(texture, pixmap, fromX, fromY, w, h);
+                send(shapeTexture, shapePixmap, fromX, fromY, w, h);
+                send(glossTexture, glossPixmap, fromX, fromY, w, h);
+            }
+            Clock.end();
             dirty = false;
         }
         return texture;

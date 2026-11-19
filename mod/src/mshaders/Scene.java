@@ -41,8 +41,23 @@ public class Scene{
     public static final int maxLights = 256;
     /** How high the light of a unit in full flight hangs at 100% of the setting, in world units: three tiles. */
     public static final float airLevel = 24f;
+    /** How high the shots of turrets and of units on the ground fly at 100% of that setting, in world units: two tiles - above every wall (the large ones count as a tile and a quarter). */
+    public static final float shotLevel = 16f;
     /** What the shaders were compiled with: maxLights, or 64 if the graphics card refused arrays that long. */
     private int shaderLights = 64;
+
+    /**
+     * How large the pictures of light are, along one side of a screen that is "full" pixels there: a quarter of it at
+     * 100% of the "light picture size" setting (as it always was), down to a sixteenth at 25%.
+     * The light pass walks, for every pixel and every light in reach, the tiles between the two - by far the most work
+     * per pixel of any step, and on a phone the slowest step of the frame although its picture is this small. Half the
+     * size is a quarter of the pixels. The picture is smoothed and stretched over the screen afterwards, so a smaller
+     * one shows as softer edges of light and shade, not as blocks.
+     */
+    private static int lightSize(int full){
+        float share = Math.min(Math.max(ShaderMod.percent(ShaderMod.lightsDetail, 100), 0.25f), 1f);
+        return Math.max((int)(full / 4 * share), 2);
+    }
 
     /** The light limit of this frame: the setting, within what the shaders can take. */
     private int lightLimit(){
@@ -66,6 +81,17 @@ public class Scene{
 
     private final float[] lightData = new float[maxLights * 4], lightColors = new float[maxLights * 4];
     private int lightCount, lightMode;
+    /**
+     * The two passes that go through the list of lights (the light stopped by blocks, the shading of normal-mapped
+     * surfaces) are drawn square by square: the picture cut into squaresX x squaresY, each drawn with only the lights
+     * that can reach it (blitByLights). The lights of the square being drawn, and how many; "squared" while one is.
+     */
+    private static final int squaresX = 6, squaresY = 4;
+    private final float[] squareData = new float[maxLights * 4], squareColors = new float[maxLights * 4];
+    private int squareCount, squareIndex;
+    private boolean squared;
+    /** For the developer option "time of each step": the squares drawn this frame and the lights they were given, all told. */
+    private int squaresDrawn, squareLights;
     private float[] scores = new float[0];
     private boolean[] chosen = new boolean[0];
     private FrameBuffer gameLight, raw, near;
@@ -80,7 +106,15 @@ public class Scene{
     private boolean lightOpen;
     private int airCount;
     private final Cons<Unit> airUnit = this::airUnit, coverUnit = this::coverUnit;
-    private final Runnable unitCover = this::unitCover;
+    /** How many units unitCover would draw this frame: all of them, and those in the air. */
+    private int unitsSeen, airSeen;
+    private final Cons<Unit> seeUnit = unit -> {
+        TextureRegion icon = unit.type.fullIcon;
+        if(icon == null || !icon.found() || !unit.isValid() || unit.inFogTo(Vars.player.team())) return;
+        unitsSeen++;
+        if(unit.elevation > 0.5f) airSeen++;
+    };
+    private final Runnable unitCover = Clock.timed("cover", this::unitCover);
     /** The frame the picture of the units in the air is of, and the frame the units were last laid over the picture of the mapped surfaces. */
     private long airFrame = -10, coverFrame = -10;
     /** What airShader works on: the light picture it starts from, and whether that is the plain sum of lights of a bright map (else colour and amount, dark maps). */
@@ -129,7 +163,7 @@ public class Scene{
     private final GlowField glowField = new GlowField();
     /** What of the units stands in the way of light this frame (bodies, feet, legs, each with its height). */
     private final UnitShades unitShades = new UnitShades();
-    private final Runnable unitPass = this::unitPass;
+    private final Runnable unitPass = Clock.timed("units", this::unitPass);
     private boolean wantUnits;
     /** What stops light (solid blocks only), and the texture the light shader reads this frame. */
     private final Occluders occluders = new Occluders();
@@ -157,13 +191,13 @@ public class Scene{
 
     private static final boolean report = System.getProperty("mstest.out") != null;
 
-    private final Runnable shapePass = this::shapePass, headPass = this::headPass;
+    private final Runnable shapePass = Clock.timed("shape", this::shapePass), headPass = Clock.timed("heads", this::headPass);
     /** The shading passes for the units, one per layer units with a map are on (keyed by that layer in tenths). */
     private final IntMap<Runnable> unitShapePasses = new IntMap<>();
     /** The frame the lights for the shading were last picked in (prepareShape). */
     private long shapePrepared = -10;
-    private final Runnable grabMask = this::grabMask, buildObjects = this::buildObjects,
-        snapshotBefore = this::snapshotBefore, buildGlow = this::buildGlow;
+    private final Runnable grabMask = this::grabMask, buildObjects = Clock.timed("mirror", this::buildObjects),
+        snapshotBefore = Clock.timed("copy", this::snapshotBefore), buildGlow = Clock.timed("copy", this::buildGlow);
 
     public boolean ready(){
         return composite != null;
@@ -191,7 +225,7 @@ public class Scene{
             pickLights();
             Draw.flush();
             Blending.disabled.apply();
-            lightPass(light, Math.max(scene.getWidth() / 4, 2), Math.max(scene.getHeight() / 4, 2), 0);
+            lightPass(light, lightSize(scene.getWidth()), lightSize(scene.getHeight()), 0);
             paintGround(light, true);
             // back to what the frame expects (see copyScene)
             Blending.normal.apply();
@@ -302,6 +336,11 @@ public class Scene{
             shapeShader = new Shader(vert, lightsDefine + shapeSource){
                 @Override
                 public void apply(){
+                    // one square after another (blitByLights): everything but the lights is set already
+                    if(squared && squareIndex > 0){
+                        sendLights(this, squareCount);
+                        return;
+                    }
                     // the glow of the ground: how strong, what colour and from where at every tile (GlowField)
                     glowField.bind(this, 3, 4);
                     set(this, "u_glowGain", groundLevel() * groundBoost);
@@ -324,10 +363,7 @@ public class Scene{
                     if(hasUniform("u_px")) setUniformf("u_px", Core.camera.width / Math.max(Core.graphics.getWidth(), 1));
                     if(hasUniform("u_sunDir")) setUniformf("u_sunDir", ShaderMod.sunX(), ShaderMod.sunY());
                     // every light source of the frame, each with its own place (picked in shapePass just before this)
-                    int count = shapeLit ? lightCount : 0;
-                    set(this, "u_count", count);
-                    if(count > 0 && (hasUniform("u_lights[0]") || hasUniform("u_lights"))) setUniform4fv("u_lights", lightData, 0, count * 4);
-                    if(count > 0 && (hasUniform("u_colors[0]") || hasUniform("u_colors"))) setUniform4fv("u_colors", lightColors, 0, count * 4);
+                    sendLights(this, squared ? squareCount : shapeLit ? lightCount : 0);
                     setCamera(this);
                     if(hasUniform("u_tiles")) setUniformf("u_tiles", Vars.world.width(), Vars.world.height());
                 }
@@ -355,9 +391,14 @@ public class Scene{
             lightShader = new Shader(vert, lightsDefine + lightSource){
                 @Override
                 public void apply(){
+                    // one square after another (blitByLights): everything but the lights is set already
+                    if(squared && squareIndex > 0){
+                        sendLights(this, squareCount);
+                        return;
+                    }
                     setCamera(this);
                     // units in the way of the light (UnitShades)
-                    boolean shaded = wantUnits && unitShades.ready() && !lightOpen;
+                    boolean shaded = unitsShading();
                     set(this, "u_unitsOn", shaded ? 1f : 0f);
                     if(shaded){
                         unitShades.texture().bind(1);
@@ -370,12 +411,7 @@ public class Scene{
                     set(this, "u_masked", lightMask != null && !lightOpen ? 1f : 0f);
                     set(this, "u_own", lightMaskOwn ? 1f : 0f);
                     set(this, "u_mode", lightMode);
-                    set(this, "u_count", lightCount);
-                    if(lightCount > 0){
-                        // GL lists array uniforms as "name[0]"
-                        if(hasUniform("u_lights[0]") || hasUniform("u_lights")) setUniform4fv("u_lights", lightData, 0, lightCount * 4);
-                        if(hasUniform("u_colors[0]") || hasUniform("u_colors")) setUniform4fv("u_colors", lightColors, 0, lightCount * 4);
-                    }
+                    sendLights(this, squared ? squareCount : lightCount);
                 }
             };
             scene = new FrameBuffer();
@@ -440,8 +476,10 @@ public class Scene{
 
         Events.run(Trigger.preDraw, this::begin);
         Events.run(Trigger.draw, this::queue);
-        Events.run(Trigger.postDraw, this::end);
+        Events.run(Trigger.postDraw, Clock.timed("end", this::end));
     }
+
+    private final Runnable shotShadows = Clock.timed("shots", () -> ShotShadows.draw(tap, this));
 
     private static boolean on(String key){
         return Core.settings.getBool(key, true);
@@ -458,6 +496,8 @@ public class Scene{
     }
 
     private void begin(){
+        // "gloss by colour only" switched: the maps are read again
+        surfaces.sync();
         // pictures drawn while the game is open: read again when they are saved
         if(Core.settings.getBool(ShaderMod.devWatch, false)){
             surfaces.watch();
@@ -470,7 +510,12 @@ public class Scene{
             tap.capture = false;
             tap.takeover = false;
             tap.moving = 1f;
-            tap.airHeight = 0f;
+            // how high the units and the shots are: for the lights below, and for the shadows of shots (ShotShadows),
+            // which are drawn whatever else is on
+            // the glow of a flying unit hangs above the ground: 100% = airLevel world units up in full flight (LightTap.airHeight)
+            tap.airHeight = Math.max(ShaderMod.percent(ShaderMod.lightsAir, 100), 0f) * airLevel;
+            // the shots of turrets and of units on the ground fly above the walls (LightTap.shotLevel)
+            tap.shotLevel = Math.max(ShaderMod.percent(ShaderMod.lightsShots, 100), 0f) * shotLevel;
             tap.data.clear();
             tap.ground.clear();
         }
@@ -479,7 +524,7 @@ public class Scene{
         boolean post = on(ShaderMod.postOn);
         // the mirror pictures are needed by the water and by the ice (both are drawn through shader layers, which the game
         // only uses while "animated surfaces" is on)
-        wantObjects = on(ShaderMod.reflectOn) && (on(ShaderMod.waterOn) || on(ShaderMod.iceOn)) && Vars.renderer.animateWater;
+        wantObjects = on(ShaderMod.reflectOn) && (on(ShaderMod.waterOn) || on(ShaderMod.iceOn)) && Vars.renderer.animateWater && mirrorsNear();
         wantLight = on(ShaderMod.lightsOn) && tap != null;
         wantUnits = wantLight && on(ShaderMod.lightsUnits);
         wantGlint = on(ShaderMod.glintOn);
@@ -495,14 +540,35 @@ public class Scene{
             tap.capture = wantLight || wantGlint || wantShape;
             // shots, beams and effects made stronger (LightTap.moving); only while one of the effects that use lights is on
             tap.moving = tap.capture ? Math.max(ShaderMod.percent(ShaderMod.lightsMoving, 100), 1f) : 1f;
-            // the glow of a flying unit hangs above the ground: 100% = airLevel world units up in full flight (LightTap.airHeight)
-            tap.airHeight = tap.capture ? Math.max(ShaderMod.percent(ShaderMod.lightsAir, 100), 0f) * airLevel : 0f;
             // on a map with the lighting rule the game's light picture is drawn here instead, so blocks can stop the light
             takeover = tap.takeover = wantLight && tap.gameLighting();
         }
         scene.resize(w, h);
         scene.begin(Color.clear);
         capturing = true;
+    }
+
+    /**
+     * Is there a floor that shows mirror images - water, ice - in view or within a few tiles of it?
+     * Only the water and ice shaders read the mirror pictures (and the sun shadow, on those same tiles). With none of
+     * that floor anywhere near, the pictures were made all the same: two copies of the frame, what the shots added, the
+     * mirror picture itself - four times in the middle of a frame the drawing left the frame and came back to it,
+     * which a phone's chip pays for with the whole screen each time. (A few tiles to spare: the pictures of one frame
+     * are read in the next, and the view may have moved by then.)
+     */
+    private boolean mirrorsNear(){
+        if(Vars.world == null || Vars.world.width() <= 0) return false;
+        float t = Vars.tilesize;
+        int spare = 8;
+        int x0 = Math.max((int)Math.floor((Core.camera.position.x - Core.camera.width / 2f) / t) - spare, 0), x1 = Math.min((int)Math.ceil((Core.camera.position.x + Core.camera.width / 2f) / t) + spare, Vars.world.width() - 1);
+        int y0 = Math.max((int)Math.floor((Core.camera.position.y - Core.camera.height / 2f) / t) - spare, 0), y1 = Math.min((int)Math.ceil((Core.camera.position.y + Core.camera.height / 2f) / t) + spare, Vars.world.height() - 1);
+        for(int y = y0; y <= y1; y++){
+            for(int x = x0; x <= x1; x++){
+                mindustry.world.blocks.environment.Floor floor = Vars.world.rawTile(x, y).floor();
+                if(floor.cacheLayer == CacheLayer.water || floor == mindustry.content.Blocks.ice || floor == mindustry.content.Blocks.redIce) return true;
+            }
+        }
+        return false;
     }
 
     /** Early in the frame: the units in view drawn into the picture the light passes read (UnitShades), half the size of the screen. */
@@ -518,6 +584,9 @@ public class Scene{
     private void queue(){
         // the engines of a core that is coming down (drawn into the frame as the game draws its own, whatever else is on)
         Boosters.queueLanding();
+        // the shadows of shots: above the blocks and the units on the ground, below the shots themselves and outside
+        // the layers the game's bloom wraps (drawn into the frame like the game's own unit shadows, whatever else is on)
+        if(tap != null && on(ShaderMod.shotShadows) && !Vars.renderer.pixelate) Draw.draw(Layer.bullet - 1f, shotShadows);
         if(!capturing) return;
         // BlockRenderer.drawShadows() runs at Layer.block - 1; right after it its texture is still in Tmp.tr1
         if(wantLight || wantGlint) Draw.draw(Layer.block - 1f + 0.0005f, grabMask);
@@ -547,7 +616,7 @@ public class Scene{
                 float layer = unitLayers.get(i);
                 int key = Math.round(layer * 10f);
                 Runnable pass = unitShapePasses.get(key);
-                if(pass == null) unitShapePasses.put(key, pass = () -> unitShapePass(layer));
+                if(pass == null) unitShapePasses.put(key, pass = Clock.timed("unitshape", () -> unitShapePass(layer)));
                 Draw.draw(layer + Surfaces.unitPassOffset, pass);
             }
         }
@@ -572,7 +641,7 @@ public class Scene{
         // "the direction most light comes from" is now only needed by the glint
         if(wantGlint && lightMask != null && tap != null){
             Blending.disabled.apply();
-            lightPass(aim, Math.max(scene.getWidth() / 4, 2), Math.max(scene.getHeight() / 4, 2), 1);
+            aimPass();
             aimFrame = Core.graphics.getFrameId();
             shapeAimed = true;
             Blending.normal.apply();
@@ -606,7 +675,7 @@ public class Scene{
             shapeFrom = headNormals;
             shapingUnits = true;
             tintBlend.apply();
-            Draw.blit(headNormals.getTexture(), shapeShader);
+            blitByLights(headNormals.getTexture(), shapeShader, scene.getWidth(), scene.getHeight(), shapeLit ? lightCount : 0, 1f);
             shapingUnits = false;
             shapeFrom = normals;
         }
@@ -662,7 +731,7 @@ public class Scene{
         prepareShape();
         shapeFrom = normals;
         tintBlend.apply();
-        Draw.blit(normals.getTexture(), shapeShader);
+        blitByLights(normals.getTexture(), shapeShader, scene.getWidth(), scene.getHeight(), shapeLit ? lightCount : 0, 1f);
         // back to what the frame expects (see copyScene)
         Blending.normal.apply();
     }
@@ -696,7 +765,7 @@ public class Scene{
         Draw.sort(true);
         shapeFrom = headNormals;
         tintBlend.apply();
-        Draw.blit(headNormals.getTexture(), shapeShader);
+        blitByLights(headNormals.getTexture(), shapeShader, scene.getWidth(), scene.getHeight(), shapeLit ? lightCount : 0, 1f);
         shapeFrom = normals;
         // back to what the frame expects (see copyScene)
         Blending.normal.apply();
@@ -815,7 +884,7 @@ public class Scene{
         shapeReady = wantShape && normalsFrame == Core.graphics.getFrameId();
         if(lit){
             pickLights();
-            int w = Math.max(scene.getWidth() / 4, 2), h = Math.max(scene.getHeight() / 4, 2);
+            int w = lightSize(scene.getWidth()), h = lightSize(scene.getHeight());
             // on a dark map the lights are already in the game's light picture (drawGameLighting), nothing is added on top
             if(wantLight && !takeover){
                 // already made early in this frame if the shadows asked for it (lampLight)
@@ -828,9 +897,12 @@ public class Scene{
                 lightmapNow = liftAir(light, w, h, 0);
                 Blending.disabled.apply();
             }
-            if(wantGlint || wantShape){
+            // only the glint reads it (mshaders-post.frag, mshaders-shape.frag). (It used to be made for the normal maps
+            // as well, which stopped needing it when they got the lights one by one: with the glint off, a whole light
+            // pass was worked out every frame and never looked at.)
+            if(wantGlint){
                 // already made in the middle of this frame if a normal-mapped block needed it (shapePass)
-                if(aimFrame != Core.graphics.getFrameId()) lightPass(aim, w, h, 1);
+                if(aimFrame != Core.graphics.getFrameId()) aimPass();
                 aimReady = true;
             }
         }
@@ -843,6 +915,18 @@ public class Scene{
         }
         Draw.blit(scene.getTexture(), composite);
         Blending.normal.apply();
+        // for the developer option "time of each step" (Clock)
+        if(Clock.on){
+            float radii = 0f;
+            for(int i = 0; i < lightCount; i++) radii += lightData[i * 4 + 2];
+            // short lines: one long line made the table wider than a phone's screen, and its numbers ran off the left edge
+            Clock.note = "light picture " + lightSize(scene.getWidth()) + "x" + lightSize(scene.getHeight())
+                + "\nlights " + (lit ? lightCount : 0) + "/" + lightLimit() + " of " + (tap == null ? 0 : tap.data.size / LightTap.stride)
+                + ", radius " + (lightCount > 0 ? Math.round(radii / lightCount / 8f * 10f) / 10f : 0f) + " tiles"
+                + (squaresDrawn > 0 ? ", " + Math.round(squareLights / (float)squaresDrawn * 10f) / 10f + " a square" : "")
+                + "\nground lights " + (tap == null ? 0 : tap.ground.size / LightTap.groundStride) + ", units " + unitsShaded + " + " + unitShades.drawn();
+        }
+        squaresDrawn = squareLights = 0;
     }
 
     /** Runs the light shader into the raw buffer; the caller then blurs raw into its own target. */
@@ -853,21 +937,166 @@ public class Scene{
         lightMaskOwn = own != null;
     }
 
+    /** Hands a shader its list of lights: the whole list of the frame, or while a pass is drawn square by square, that square's. */
+    private void sendLights(Shader shader, int count){
+        set(shader, "u_count", count);
+        if(count <= 0) return;
+        float[] data = squared ? squareData : lightData, colors = squared ? squareColors : lightColors;
+        // GL lists array uniforms as "name[0]"
+        if(shader.hasUniform("u_lights[0]") || shader.hasUniform("u_lights")) shader.setUniform4fv("u_lights", data, 0, count * 4);
+        if(shader.hasUniform("u_colors[0]") || shader.hasUniform("u_colors")) shader.setUniform4fv("u_colors", colors, 0, count * 4);
+    }
+
+    /**
+     * Draws a pass that goes through the list of lights - over the whole target, like Draw.blit - square by square,
+     * each square with only the lights that can reach it.
+     *
+     * Both shaders look at every light for every pixel and drop the ones out of reach; with a base full of lights that
+     * is the whole list, sixty and more, for every pixel, although only a few are ever near. (Measured on a phone: this
+     * pass, a quarter of the screen in size, was the slowest step of the frame.) The picture is the same to the last
+     * bit: a light left out of a square is one the shader would have dropped for each of its pixels (the same test,
+     * with a margin), and the ones kept stay in their order.
+     * @param w, h  the size of the target being drawn into
+     * @param count how many of the frame's lights the pass uses
+     * @param wide  how many radii a light reaches in this pass (1; mode 3 of the light pass: 2.8)
+     */
+    /** Are units in the way of light in the light pass being drawn? */
+    private boolean unitsShading(){
+        return wantUnits && unitShades.ready() && !lightOpen;
+    }
+
+    /**
+     * Can something of a unit - a disc of radius r around (cx, cy) - lie between a point of that rectangle and the
+     * point (lx, ly)? That is: does the disc touch the smallest shape with no dents that holds both.
+     */
+    private static boolean between(float left, float low, float right, float top, float lx, float ly, float cx, float cy, float r){
+        float dx = Math.max(Math.max(left - cx, cx - right), 0f), dy = Math.max(Math.max(low - cy, cy - top), 0f);
+        if(dx * dx + dy * dy <= r * r) return true;
+        // the light inside the rectangle: the rectangle is all of it
+        if(lx >= left && lx <= right && ly >= low && ly <= top) return false;
+        // corners in order round the rectangle
+        for(int i = 0; i < 4; i++){
+            float ax = i == 0 || i == 3 ? left : right, ay = i < 2 ? low : top;
+            float bx = i == 0 || i == 1 ? right : left, by = i == 0 || i == 3 ? low : top;
+            // near the line from the light to a corner
+            float ex = ax - lx, ey = ay - ly, len2 = ex * ex + ey * ey;
+            float f = len2 <= 0f ? 0f : arc.math.Mathf.clamp(((cx - lx) * ex + (cy - ly) * ey) / len2);
+            float px = lx + ex * f - cx, py = ly + ey * f - cy;
+            if(px * px + py * py <= r * r) return true;
+            // inside the triangle of the light and one side of the rectangle
+            float d1 = (cx - ax) * (ly - ay) - (lx - ax) * (cy - ay), d2 = (cx - bx) * (ay - by) - (ax - bx) * (cy - by), d3 = (cx - lx) * (by - ly) - (bx - lx) * (cy - ly);
+            if(!((d1 < 0f || d2 < 0f || d3 < 0f) && (d1 > 0f || d2 > 0f || d3 > 0f))) return true;
+        }
+        return false;
+    }
+
+    private void blitByLights(Texture source, Shader shader, int w, int h, int count, float wide){
+        blitByLights(source, shader, w, h, count, wide, false);
+    }
+
+    /**
+     * @param units the pass also walks towards every light looking for units in the way (mshaders-light.frag,
+     *              unitsOpen: up to 32 steps a light for every pixel - more work than the walk past the blocks, and
+     *              done whether three units are in view or three hundred). Here each light of a square is looked at
+     *              first: if nothing of any unit lies between the square and the light, the light is handed over with
+     *              its strength below zero, which tells the shader to leave those steps out. They would have found
+     *              nothing: the picture stays the same. With more than a few dozen units in view this is not tried.
+     */
+    private void blitByLights(Texture source, Shader shader, int w, int h, int count, float wide, boolean units){
+        if(count <= 4 || w < squaresX * 4 || h < squaresY * 4 || !Core.settings.getBool(ShaderMod.devSquares, true)){
+            Draw.blit(source, shader);
+            return;
+        }
+        float cx = Core.camera.position.x - Core.camera.width / 2f, cy = Core.camera.position.y - Core.camera.height / 2f;
+        float cw = Core.camera.width, ch = Core.camera.height;
+        boolean cut = Gl.isEnabled(Gl.scissorTest);
+        Gl.enable(Gl.scissorTest);
+        squared = true;
+        squareIndex = 0;
+        float[] spots = unitShades.spots.items;
+        int spotCount = unitShades.spots.size / 3;
+        units &= spotCount <= 48 && Core.settings.getBool("mshaders-unit-skip", true);
+        // what is drawn of a unit, to spare: the picture of the units is read between its pixels (it is half the size of the screen)
+        float pad = units ? 4f + 3f * cw / Math.max(unitShades.texture().width, 1) : 0f;
+        try{
+            for(int sy = 0; sy < squaresY; sy++){
+                int y0 = h * sy / squaresY, y1 = h * (sy + 1) / squaresY;
+                // (half a tile to spare: on a phone the shader's own arithmetic is coarser than this one)
+                float low = cy + ch * y0 / h - 4f, top = cy + ch * y1 / h + 4f;
+                for(int sx = 0; sx < squaresX; sx++){
+                    int x0 = w * sx / squaresX, x1 = w * (sx + 1) / squaresX;
+                    float left = cx + cw * x0 / w - 4f, right = cx + cw * x1 / w + 4f;
+                    squareCount = 0;
+                    for(int i = 0; i < count; i++){
+                        int o = i * 4;
+                        float r = lightData[o + 2] * wide, code = lightColors[o + 3];
+                        // a light that hangs "high" up reaches further along the ground: as far as  sqrt(r * r + 2 * r * high)
+                        // (the shaders: distance = sqrt(along * along + high * high) - high, dropped at r and beyond)
+                        float high = code >= 1000f ? (code - 1000f) % 100f : 0f;
+                        float dx = Math.max(Math.max(left - lightData[o], lightData[o] - right), 0f), dy = Math.max(Math.max(low - lightData[o + 1], lightData[o + 1] - top), 0f);
+                        if(dx * dx + dy * dy > r * r + 2f * r * high) continue;
+                        int k = squareCount * 4;
+                        System.arraycopy(lightData, o, squareData, k, 4);
+                        System.arraycopy(lightColors, o, squareColors, k, 4);
+                        squareCount++;
+                        if(units){
+                            boolean inWay = false;
+                            float lx = lightData[o], ly = lightData[o + 1];
+                            for(int s = 0; s < spotCount && !inWay; s++){
+                                float ux = spots[s * 3], uy = spots[s * 3 + 1], ur = spots[s * 3 + 2] + pad;
+                                // roughly first: outside the box around square and light, it is not between them
+                                if(ux < Math.min(left, lx) - ur || ux > Math.max(right, lx) + ur || uy < Math.min(low, ly) - ur || uy > Math.max(top, ly) + ur) continue;
+                                inWay = between(left, low, right, top, lx, ly, ux, uy, ur);
+                            }
+                            if(!inWay) squareData[k + 3] = -squareData[k + 3];
+                        }
+                    }
+                    Gl.scissor(x0, y0, x1 - x0, y1 - y0);
+                    Draw.blit(source, shader);
+                    squareIndex++;
+                    squaresDrawn++;
+                    squareLights += squareCount;
+                }
+            }
+        }finally{
+            squared = false;
+            if(!cut) Gl.disable(Gl.scissorTest);
+        }
+    }
+
     private void rawLight(int w, int h, int mode){
         lightMode = mode;
         raw.resize(w, h);
         raw.begin(Color.clear);
-        Draw.blit(lightMask != null ? lightMask : scene.getTexture(), lightShader);
+        blitByLights(lightMask != null ? lightMask : scene.getTexture(), lightShader, w, h, lightCount, mode == 3 ? 2.8f : 1f, unitsShading());
         raw.end();
     }
 
+    /**
+     * The direction most light comes from, for the glint (the light shader's mode 1).
+     * With "light stopped by blocks" switched off it is worked out with nothing in the way of the lights, as that
+     * setting says. (It was not: the pass walked from every pixel to every light in reach all the same - the slowest
+     * step of the frame, measured on a phone - so switching the setting off took the light away and left its cost.
+     * The maker: "I switched it off - why is it still working?")
+     */
+    private void aimPass(){
+        boolean was = lightOpen;
+        if(!wantLight) lightOpen = true;
+        lightPass(aim, lightSize(scene.getWidth()), lightSize(scene.getHeight()), 1);
+        lightOpen = was;
+    }
+
     private void lightPass(FrameBuffer target, int w, int h, int mode){
+        Clock.begin(mode == 1 ? "aim" : "light");
         lightMode = mode;
         rawLight(w, h, mode);
+        Clock.begin("blur");
         target.resize(w, h);
         target.begin(Color.clear);
         Draw.blit(raw.getTexture(), blurShader);
         target.end();
+        Clock.end();
+        Clock.end();
     }
 
     /**
@@ -919,7 +1148,7 @@ public class Scene{
         pickLightMask();
         pickLights();
 
-        int w = Math.max(Core.graphics.getWidth() / 4, 2), h = Math.max(Core.graphics.getHeight() / 4, 2);
+        int w = lightSize(Core.graphics.getWidth()), h = lightSize(Core.graphics.getHeight());
         Draw.flush();
         Blending.disabled.apply();
         // deepening the dark: how near the lights are, with a much wider reach than the light itself
@@ -1023,23 +1252,31 @@ public class Scene{
     private void unitCover(){
         if(!capturing) return;
         long frame = Core.graphics.getFrameId();
+        float cw = Core.camera.width, ch = Core.camera.height, margin = 64f;
+        float x = Core.camera.position.x - cw / 2f - margin, y = Core.camera.position.y - ch / 2f - margin;
+        // Looked first: with no unit there, neither picture is made. (Empty, they said the same as not being there at
+        // all - but making them took the drawing out of the frame and back twice, with a whole screen cleared each time.)
+        unitsSeen = airSeen = 0;
+        Groups.unit.intersect(x, y, cw + margin * 2f, ch + margin * 2f, seeUnit);
+        airCount = 0;
+        airFrame = frame;
+        boolean covering = wantGlint && unitsSeen > 0;
+        if(airSeen == 0 && !covering) return;
         Draw.flush();
         Blending previous = Draw.getBlend();
         Draw.sort(false);
         Draw.color();
         // the shape alone: every pixel of the sprite white
         Draw.mixcol(Color.white, 1f);
-        float cw = Core.camera.width, ch = Core.camera.height, margin = 64f;
-        float x = Core.camera.position.x - cw / 2f - margin, y = Core.camera.position.y - ch / 2f - margin;
-        Draw.blend(mirrorBlend);
-        air.resize(scene.getWidth(), scene.getHeight());
-        air.begin(Color.clear);
-        airCount = 0;
-        Groups.unit.intersect(x, y, cw + margin * 2f, ch + margin * 2f, airUnit);
-        Draw.flush();
-        air.end();
-        airFrame = frame;
-        if(wantGlint){
+        if(airSeen > 0){
+            Draw.blend(mirrorBlend);
+            air.resize(scene.getWidth(), scene.getHeight());
+            air.begin(Color.clear);
+            Groups.unit.intersect(x, y, cw + margin * 2f, ch + margin * 2f, airUnit);
+            Draw.flush();
+            air.end();
+        }
+        if(covering){
             Draw.blend(coverBlend);
             normals.resize(scene.getWidth(), scene.getHeight());
             // over this frame's surfaces if there are any, else on an empty picture
@@ -1157,6 +1394,10 @@ public class Scene{
         set(s, "u_saturation", post ? ShaderMod.percent(ShaderMod.saturation, 115) : 1f);
         set(s, "u_contrast", post ? ShaderMod.percent(ShaderMod.contrast, 108) : 1f);
         set(s, "u_warmth", post ? ShaderMod.percent(ShaderMod.warmth, 15) : 0f);
+        // only where the game lays its red haze over the whole picture (EnvRenderers draws it while this bit is set:
+        // Erekir, and maps made with its surroundings) - everywhere else the picture is left exactly as it was
+        boolean haze = (Vars.state.rules.env & mindustry.world.meta.Env.scorching) != 0;
+        set(s, "u_spare", post && haze ? Math.min(Math.max(ShaderMod.percent(ShaderMod.spare, 100), 0f), 1f) : 0f);
 
         set(s, "u_light", lightReady ? ShaderMod.percent(ShaderMod.lightsStrength, 100) : 0f);
         set(s, "u_glint", glintReady ? ShaderMod.percent(ShaderMod.glintStrength, 100) : 0f);

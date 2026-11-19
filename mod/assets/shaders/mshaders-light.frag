@@ -26,7 +26,9 @@ uniform vec2 u_world;       // map size in world units
 // 3: how near the light is, 1 = inside a light, falling to 0 at WIDE times its radius (for deepening the dark far from light)
 uniform int u_mode;
 uniform int u_count;
-uniform vec4 u_lights[MAX_LIGHTS];  // x, y, radius, opacity
+// x, y, radius, opacity. Opacity below zero: the same light, and no unit can be in its way from anywhere in the part of
+// the picture being drawn (Scene.blitByLights) - the steps that look for units are left out for it.
+uniform vec4 u_lights[MAX_LIGHTS];
 uniform vec4 u_colors[MAX_LIGHTS];  // rgb = colour; a = what the light sits in (see reach), or 1000 + how high it hangs (flying units)
 
 varying vec2 v_texCoords;
@@ -274,7 +276,7 @@ void main(){
         vec4 l = u_lights[i];
         vec2 d = l.xy - world;
         float along = length(d);        // distance on the ground
-        float dist = along, strength = l.w, sideways = 1.0;
+        float dist = along, strength = abs(l.w), sideways = 1.0;
         // A light that hangs "high" world units up (the glow of a flying unit): what counts is how much further away
         // it is than from the spot right under it. Under the unit that changes little with every step - a wide, even
         // pool instead of a hot spot - and the pool reaches further out; spread over more ground, it is fainter.
@@ -296,12 +298,12 @@ void main(){
         float own = code >= 1000.0 ? floor((code - 1000.0) / 100.0) : (code < 0.0 ? -code : 0.0);
         // A light that does not hang in the air is taken to sit low, UNIT_LAMP up: a unit on the ground then shades all
         // the way behind it, and the light of a lamp a walker stands over gets out under its body, between its legs.
-        if(u_unitsOn > 0.5 && open > 0.01) open *= mix(1.0, unitsOpen(world, l.xy, along, standing, high > 0.0 ? high : UNIT_LAMP, high > 0.0 ? 1.0 : 0.0, own, jitter), u_unitDepth);
+        if(u_unitsOn > 0.5 && l.w >= 0.0 && open > 0.01) open *= mix(1.0, unitsOpen(world, l.xy, along, standing, high > 0.0 ? high : UNIT_LAMP, high > 0.0 ? 1.0 : 0.0, own, jitter), u_unitDepth);
         vec3 c = u_colors[i].rgb;
         if(u_mode == 3){
             // full inside the lit circle, fading out to WIDE radii; weak lights count less; behind a block it is
             // "a little light" rather than none, so shade next to a lamp does not turn pitch black
-            float f = (1.0 - smoothstep(0.7, WIDE, dist / l.z)) * smoothstep(0.0, 0.5, l.w) * mix(0.45, 1.0, open);
+            float f = (1.0 - smoothstep(0.7, WIDE, dist / l.z)) * smoothstep(0.0, 0.5, abs(l.w)) * mix(0.45, 1.0, open);
             most = max(most, f);
         }else if(u_mode == 2){
             // same fall-off as the game's light sprite "circle-shadow" (measured: 1 until 0.2 of the radius, 0.73 at half, 0 at the rim)

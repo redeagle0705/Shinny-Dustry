@@ -78,6 +78,9 @@ import java.lang.reflect.*;
  *   flicker=true   report how much 8 frames in a row differ
  *   dark=true      switch on the map lighting rule (the game's own darkness and lights)
  *   fps=true       report the frame rate of the shot (vsync and the fps cap are switched off in the test profile)
+ *   gl=true        report what a frame of the shot asks of the graphics card: draw calls, texture bindings, shader switches
+ *                  (counting slows the game down: not together with fps=true)
+ *   fieldof=a+b    fill the view with those blocks, taking turns (a busy base seen from far away)
  *   sprites=a+b    save atlas sprites enlarged and report where their light and dark pixels are
  *   turretlist=true  report every turret-like block with the sprites it is put together from (base, body, parts; effects apart)
  *   weaponlist=true  report every unit with its weapons: the colours of each shot and the colour of its light (run without the shader mod)
@@ -94,6 +97,10 @@ public class TestKit extends Mod{
     final Seq<String[]> shots = new Seq<>();
     final StringBuilder report = new StringBuilder();
     int index = -1, phase, fpsFrames;
+    /** gl=true: the counter of the engine, and what it counted over the frames of this shot. */
+    arc.profiling.GLProfiler profiler;
+    boolean glShot;
+    long glFrames, glDraws, glBinds, glSwitches, glCalls;
     float camX, camY;
     boolean camSet, fx, lamp, fpsShot, bandShot, beam, flickerShot, flash;
     mindustry.gen.Unit lastUnit;
@@ -117,7 +124,7 @@ public class TestKit extends Mod{
     /** How far to the right of the lamp the unit of the other team is held, world units (enemyright=N, before enemy=). */
     float enemyRight = 64f;
     /** heldshot=F: a shot of the first unit of the row, held at the first test lamp with that share of its time used up (0..1); below 0 = none. */
-    float heldShot = -1f;
+    float heldShot = -1f, heldDx, heldDy;
     mindustry.gen.Bullet shotHeld;
     int many;
     float[] beamPos;
@@ -164,12 +171,25 @@ public class TestKit extends Mod{
             shaderFacts("at client load");
 
             Map map = Vars.maps.all().find(m -> m.file.nameWithoutExtension().equalsIgnoreCase(mapName) || m.name().equalsIgnoreCase(mapName));
+            // "erekir/onset", "serpulo/groundZero": a map of the campaign, read from the game's own files (maps/<name>.msav)
+            if(map == null && mapName.contains("/")){
+                Fi file = Vars.tree.get("maps/" + mapName + "." + Vars.mapExtension);
+                if(file.exists()) map = mindustry.io.MapIO.createMap(file, false);
+            }
             if(map == null){
                 fail("map not found: " + mapName + " (have " + Vars.maps.all().map(m -> m.file.nameWithoutExtension()) + ")");
                 return;
             }
             Core.graphics.setVSync(false);
-            Vars.control.playMap(map, map.applyRules(Gamemode.sandbox));
+            Rules rules = map.applyRules(Gamemode.sandbox);
+            if(mapName.startsWith("erekir/")){
+                // what the planet lays on every map of it (Planet.applyRules): its surroundings - Env.scorching, which is
+                // what makes the game draw the red haze (EnvRenderers) - and fog of war. The fog is left out here, it
+                // would hide all but the surroundings of the core; the key fog=true turns it on for a shot.
+                Planets.erekir.applyRules(rules, true);
+                rules.fog = rules.staticFog = false;
+            }
+            Vars.control.playMap(map, rules);
             Events.run(Trigger.preDraw, () -> {
                 if(camSet) Core.camera.position.set(camX, camY);
                 if(!Float.isNaN(landing)){
@@ -250,6 +270,16 @@ public class TestKit extends Mod{
             if(fpsFrames == 0) fpsStart = Time.nanos();
             fpsFrames++;
         }
+        if(profiler != null && profiler.isEnabled()){
+            if(glShot && elapsed >= 0.5f){
+                glFrames++;
+                glDraws += profiler.getDrawCalls();
+                glBinds += profiler.getTextureBindings();
+                glSwitches += profiler.getShaderSwitches();
+                glCalls += profiler.getCalls();
+            }
+            profiler.reset();
+        }
         if(fx && Time.timeSinceMillis(lastFx) >= 200){
             lastFx = Time.millis();
             // glowing effects inside the bloom layer range, to compare bloom strengths
@@ -293,6 +323,10 @@ public class TestKit extends Mod{
                 line("  frame rate: " + Strings.fixed((fpsFrames - 1) / seconds, 0) + " fps (" + (fpsFrames - 1) + " frames in " + Strings.fixed(seconds, 2) + " s) at "
                     + Core.graphics.getWidth() + "x" + Core.graphics.getHeight() + ", vsync and fps cap off");
             }
+            if(glShot && glFrames > 0){
+                line("  a frame: " + glDraws / glFrames + " draw calls, " + glBinds / glFrames + " texture bindings, " + glSwitches / glFrames + " shader switches, "
+                    + glCalls / glFrames + " calls in all (mean of " + glFrames + " frames)");
+            }
             capture(shots.get(index)[0]);
             nextShot();
         }
@@ -310,6 +344,9 @@ public class TestKit extends Mod{
         lamp = false;
         fpsShot = false;
         fpsFrames = 0;
+        glShot = false;
+        glFrames = glDraws = glBinds = glSwitches = glCalls = 0;
+        if(profiler != null && profiler.isEnabled()) profiler.disable();
         shotStart = Time.millis();
         bandShot = false;
         beam = false;
@@ -330,6 +367,13 @@ public class TestKit extends Mod{
                 case "fx" -> fx = Boolean.parseBoolean(v);
                 case "lamp" -> lamp = Boolean.parseBoolean(v);
                 case "fps" -> fpsShot = Boolean.parseBoolean(v);
+                case "gl" -> {
+                    glShot = Boolean.parseBoolean(v);
+                    if(glShot){
+                        if(profiler == null) profiler = new arc.profiling.GLProfiler(Core.graphics);
+                        profiler.enable();
+                    }
+                }
                 case "band" -> bandShot = Boolean.parseBoolean(v);
                 case "beam" -> beam = Boolean.parseBoolean(v);
                 case "laser" -> laser = Boolean.parseBoolean(v);
@@ -355,6 +399,26 @@ public class TestKit extends Mod{
                     Vars.state.rules.lighting = number || Boolean.parseBoolean(v);
                     Vars.state.rules.ambientLight.set(0.02f, 0.02f, 0.06f, number ? Float.parseFloat(v) : 0.78f);
                 }
+                case "fog" -> Vars.state.rules.fog = Vars.state.rules.staticFog = Boolean.parseBoolean(v);
+                // haze=false: the map without the red haze of a scorching planet (the game draws it while this bit is set)
+                case "haze" -> Vars.state.rules.env = Boolean.parseBoolean(v) ? Vars.state.rules.env | mindustry.world.meta.Env.scorching : Vars.state.rules.env & ~mindustry.world.meta.Env.scorching;
+                case "atcore" -> {
+                    var core = Vars.player.team().core();
+                    if(core != null){
+                        camX = core.x + Float.parseFloat(v.split(":")[0]) * Vars.tilesize;
+                        camY = core.y + Float.parseFloat(v.split(":")[1]) * Vars.tilesize;
+                        camSet = true;
+                    }
+                }
+                // view=x:y: the view (and with it where field, blocks ... are put) at that tile of the map, the same
+                // in every run - the place the camera picks for itself differs from run to run
+                case "view" -> {
+                    viewX = Integer.parseInt(v.split(":")[0]);
+                    viewY = Integer.parseInt(v.split(":")[1]);
+                    camX = (viewX + viewW / 2f) * Vars.tilesize;
+                    camY = (viewY + viewH / 2f) * Vars.tilesize;
+                    camSet = true;
+                }
                 case "blocks" -> placeBlocks();
                 case "shore" -> placeShore();
                 case "belt" -> placeBelt();
@@ -376,6 +440,7 @@ public class TestKit extends Mod{
                     camY = (baseY + Float.parseFloat(v.split(":")[1]) + 0.5f) * Vars.tilesize;
                 }
                 case "field" -> placeField();
+                case "fieldof" -> placeFieldOf(v);
                 case "fill" -> fillBelts();
                 case "joincam" -> {
                     camX = (joinX + 6 * Integer.parseInt(v) + 0.5f) * Vars.tilesize;
@@ -474,6 +539,14 @@ public class TestKit extends Mod{
                     new Fi(ends[0]).copyTo(new Fi(ends[1]));
                     line("  copied " + new Fi(ends[0]).name() + " to " + ends[1]);
                 }
+                // removefile=path: a picture taken out of a watched folder while the game runs. Only inside the
+                // system's folder for temporary files: the pictures of the mod itself are never deleted by a test.
+                case "removefile" -> {
+                    java.io.File gone = new java.io.File(v).getAbsoluteFile().toPath().normalize().toFile();
+                    java.io.File temp = new java.io.File(System.getProperty("java.io.tmpdir")).getAbsoluteFile().toPath().normalize().toFile();
+                    if(!gone.toPath().startsWith(temp.toPath())) line("  NOT removed (not in the temporary folder): " + v);
+                    else line("  removed " + gone.getName() + ": " + gone.delete());
+                }
                 case "landing" -> {
                     var core = Vars.player.team().core();
                     if(v.equals("off") || core == null){
@@ -493,6 +566,11 @@ public class TestKit extends Mod{
                 }
                 case "unitkit" -> unitKit(v);
                 case "heldshot" -> heldShot = Float.parseFloat(v);
+                // heldat=dx:dy: the held shot that far (world units) from the first test lamp, to move it across a block
+                case "heldat" -> {
+                    heldDx = Float.parseFloat(v.split(":")[0]);
+                    heldDy = Float.parseFloat(v.split(":")[1]);
+                }
                 case "enemy" -> {
                     // enemy=name: a unit of the other team held to the right of the row, for the row to shoot at; nothing in the row dies
                     var foe = Vars.content.unit(v);
@@ -502,8 +580,20 @@ public class TestKit extends Mod{
                         crowdAt.add(ex, ey);
                     }
                 }
+                // ammo=true: every item turret of the player's team gets its first kind of ammunition, so it fires at what comes near
+                case "ammo" -> {
+                    int fed = 0;
+                    for(var build : mindustry.gen.Groups.build){
+                        if(build.team != Vars.player.team() || !(build.block instanceof mindustry.world.blocks.defense.turrets.ItemTurret turret)) continue;
+                        var item = turret.ammoTypes.keys().toSeq().first();
+                        for(int i = 0; i < 30 && build.acceptItem(build, item); i++) build.handleItem(build, item);
+                        fed++;
+                    }
+                    line("  ammunition given to " + fed + " turret(s)");
+                }
                 case "pin" -> pinAt = new float[]{(baseX + Float.parseFloat(v.split(":")[0]) + 0.5f) * Vars.tilesize, (baseY + Float.parseFloat(v.split(":")[1]) + 0.5f) * Vars.tilesize};
                 case "sprites" -> dumpSprites(v);
+                case "spritefiles" -> spriteFiles();
                 case "turretlist" -> listTurrets();
                 case "weaponlist" -> listWeapons();
                 case "unitcolors" -> unitColors();
@@ -900,6 +990,42 @@ public class TestKit extends Mod{
         line("  placed four conveyor joins at tile " + joinX + "," + joinY + " (shapes:" + shapes + ", tiles not free: " + missing + ")");
     }
 
+    /** fieldof=a+b: those blocks over the whole view, taking turns, each on the next free square of its size. */
+    void placeFieldOf(String names){
+        var team = Vars.player.team();
+        Seq<mindustry.world.Block> kinds = new Seq<>();
+        int step = 1;
+        for(String name : names.split("[+]")){
+            mindustry.world.Block block = Vars.content.block(name);
+            if(block == null){
+                line("  no block named " + name);
+                continue;
+            }
+            kinds.add(block);
+            step = Math.max(step, block.size);
+        }
+        if(kinds.isEmpty()) return;
+        int placed = 0;
+        for(int x = viewX - 2; x < viewX + viewW + 2; x += step){
+            for(int y = viewY - 2; y < viewY + viewH + 2; y += step){
+                var t = Vars.world.tile(x, y);
+                if(t == null) continue;
+                mindustry.world.Block block = kinds.get(placed % kinds.size);
+                boolean free = true;
+                for(int dx = 0; dx < block.size && free; dx++){
+                    for(int dy = 0; dy < block.size && free; dy++){
+                        var o = Vars.world.tile(x + dx + block.sizeOffset, y + dy + block.sizeOffset);
+                        free = o != null && o.build == null && !o.block().isStatic() && !o.floor().isLiquid;
+                    }
+                }
+                if(!free) continue;
+                t.setBlock(block, team, 0);
+                placed++;
+            }
+        }
+        line("  placed a field of " + placed + " blocks (" + names + ")");
+    }
+
     /** Conveyors over the whole view: every row a belt, alternately running right and left, every sixth column running up through them. */
     void placeField(){
         var team = Vars.player.team();
@@ -1117,9 +1243,14 @@ public class TestKit extends Mod{
             // heldshot=F: what a shot of that unit lights on its way, next to the test buildings and away from the unit's own glow
             if(shotHeld == null || !shotHeld.isAdded()){
                 shotHeld = crowd.first().type.weapons.first().bullet.create(crowd.first(), crowd.first().team, lampPos[0], lampPos[1], 0f);
+                // counted as fired by that unit itself (LightTap.firedAt tells by where a shot started), though it is held far from it
+                if(shotHeld != null){
+                    shotHeld.originX = crowd.first().x;
+                    shotHeld.originY = crowd.first().y;
+                }
             }
             if(shotHeld != null){
-                shotHeld.set(lampPos[0], lampPos[1]);
+                shotHeld.set(lampPos[0] + heldDx, lampPos[1] + heldDy);
                 shotHeld.time = Math.min(heldShot, 0.98f) * shotHeld.lifetime;
             }
         }
@@ -1379,6 +1510,45 @@ public class TestKit extends Mod{
      * 50 degrees or above 345) do not count. The fullest bin wins if it holds at least 1.2% of the sprite; the line
      * gives the colour used most in it. A unit without such a colour is listed with a dash.
      */
+    /**
+     * spritefiles=true: every sprite of the game's own buildings and units as a picture file of its own, into
+     * <out>/sprites/blocks and <out>/sprites/units - to count the colours the game paints with (run it without the
+     * shader mod, which replaces sprites). Left out: copies and masks (icons, outlines, team pieces, heat and glow).
+     */
+    void spriteFiles(){
+        String[] skip = {"-heat", "-glow", "-light", "-shadow", "-full", "-ui", "-icon", "-preview", "-outline", "-liquid", "-blur", "-invert"};
+        Seq<String> blocks = new Seq<>(), units = new Seq<>();
+        for(mindustry.world.Block block : Vars.content.blocks()) if(block.minfo.mod == null && block.synthetic()) blocks.add(block.name);
+        for(mindustry.type.UnitType type : Vars.content.units()){
+            if(type.minfo.mod != null) continue;
+            units.add(type.name);
+            for(var weapon : type.weapons) if(weapon.name != null && !weapon.name.isEmpty() && !units.contains(weapon.name)) units.add(weapon.name);
+        }
+        int[] wrote = new int[2];
+        ObjectSet<String> done = new ObjectSet<>();
+        for(TextureAtlas.AtlasRegion region : Core.atlas.getRegions()){
+            String name = region.name;
+            if(name == null || !done.add(name) || name.contains("-team") || name.contains("-cell")) continue;
+            boolean out = false;
+            for(String end : skip) out |= name.endsWith(end);
+            if(out) continue;
+            int kind = -1;
+            if(name.matches("block-[0-9]+")) kind = 0;
+            for(String block : blocks) if(kind < 0 && (name.equals(block) || name.startsWith(block + "-"))) kind = 0;
+            for(String unit : units) if(kind < 0 && (name.equals(unit) || name.startsWith(unit + "-"))) kind = 1;
+            if(kind < 0) continue;
+            try{
+                Pixmap p = Core.atlas.getPixmap(region).crop();
+                PixmapIO.writePng(new Fi(outDir).child("sprites").child(kind == 0 ? "blocks" : "units").child(name + ".png"), p);
+                p.dispose();
+                wrote[kind]++;
+            }catch(Throwable t){
+                line("  sprite " + name + ": " + t);
+            }
+        }
+        line("  sprite files: " + wrote[0] + " of blocks, " + wrote[1] + " of units");
+    }
+
     void unitColors(){
         for(mindustry.type.UnitType type : Vars.content.units()){
             if(type.minfo.mod != null || !type.region.found()) continue;

@@ -21,6 +21,9 @@ import mindustry.graphics.Shaders.*;
 public class ShadowFx{
     private DarknessShader original, directional;
     private final Runnable swapIn = () -> {
+        // (timed from here until swapOut: the game draws its shadows with the shader put in here)
+        if(Clock.on) Draw.flush();
+        Clock.begin("shadow");
         // Where a lamp shines the sun is not the only light, so its shadow is fainter there: the lamps' light of this
         // frame, made now (before the shadows are drawn) and read by both shadow shaders. Null when the lights are off.
         fill = Core.settings.getBool(ShaderMod.lightsOn, true) && this.scene != null ? this.scene.lampLight() : null;
@@ -57,8 +60,10 @@ public class ShadowFx{
         // the mask is exactly one texel per tile; anything else is not it
         mask = t != null && !t.isDisposed() && t.width == Vars.world.width() && t.height == Vars.world.height() ? t : null;
         maskFrame = Core.graphics.getFrameId();
+        if(Clock.on) Draw.flush();
+        Clock.end();
     };
-    private final Runnable onBlocks = this::onBlocks;
+    private final Runnable onBlocks = Clock.timed("shadowtop", this::onBlocks);
     private Shader topShader;
     private Texture mask;
     private long maskFrame = -10;

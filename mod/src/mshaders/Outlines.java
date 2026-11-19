@@ -6,6 +6,7 @@ import arc.graphics.*;
 import arc.graphics.Texture.*;
 import arc.graphics.g2d.*;
 import arc.graphics.g2d.TextureAtlas.*;
+import arc.graphics.gl.*;
 import arc.struct.*;
 import arc.util.*;
 import mindustry.*;
@@ -68,12 +69,82 @@ public class Outlines{
     private static Texture watchedTexture;
 
     /**
+     * What a sprite of the game was before a sprite of the watched folder took its place, kept from the first time
+     * that happened. The sprites of the folder are all put into one texture, and at every reading into a new one, the
+     * one before being thrown away. A sprite whose picture had been REMOVED from the folder in the meantime was left
+     * pointing into the texture thrown away - and a texture thrown away draws as plain black over the whole square of
+     * the sprite. (The maker deleted scatter-preview.png with the game open: the game draws the shadow of a turret's
+     * head with that sprite, and the scatter got a dark square under it, turning with its head.)
+     */
+    private static class Was{
+        final Texture texture;
+        final float u, v, u2, v2, offsetX, offsetY;
+        final int width, height, packedWidth, packedHeight, originalWidth, originalHeight;
+        final PixmapRegion pixmapRegion;
+
+        Was(AtlasRegion region){
+            texture = region.texture;
+            u = region.u;
+            v = region.v;
+            u2 = region.u2;
+            v2 = region.v2;
+            width = region.width;
+            height = region.height;
+            offsetX = region.offsetX;
+            offsetY = region.offsetY;
+            packedWidth = region.packedWidth;
+            packedHeight = region.packedHeight;
+            originalWidth = region.originalWidth;
+            originalHeight = region.originalHeight;
+            pixmapRegion = region.pixmapRegion;
+        }
+
+        void back(AtlasRegion region){
+            region.texture = texture;
+            region.u = u;
+            region.v = v;
+            region.u2 = u2;
+            region.v2 = v2;
+            region.width = width;
+            region.height = height;
+            region.offsetX = offsetX;
+            region.offsetY = offsetY;
+            region.packedWidth = packedWidth;
+            region.packedHeight = packedHeight;
+            region.originalWidth = originalWidth;
+            region.originalHeight = originalHeight;
+            region.pixmapRegion = pixmapRegion;
+        }
+    }
+
+    /** Every sprite a sprite of the watched folder has ever taken the place of, with what it was before. */
+    private static final ObjectMap<AtlasRegion, Was> before = new ObjectMap<>();
+    /** The sprites that point into the watched folder's texture right now. */
+    private static final Seq<AtlasRegion> watchedNow = new Seq<>();
+
+    /** The sprites of the watched folder's texture that the folder no longer brings: back to what they were. */
+    private static void giveBack(Seq<AtlasRegion> still){
+        int back = 0;
+        for(AtlasRegion region : watchedNow){
+            if(still.contains(region, true)) continue;
+            Was was = before.get(region);
+            if(was == null) continue;
+            was.back(region);
+            back++;
+        }
+        watchedNow.clear();
+        watchedNow.addAll(still);
+        if(back > 0) Log.info("[mshaders] @ sprite(s) no longer in the watched folder: back to what they were", back);
+    }
+
+    /**
      * Drawing with the game open (Surfaces.watched): to be called every frame. Twice a second it looks whether a
      * sprite in the watched folder's sprites-override has been saved, added or removed; if so, every sprite of that
      * folder is put in place of the game's sprite of the same name, with its outline where the game gives one - as at
      * the start of the game, but from that folder and at once. (At the start they are taken once in any case:
      * takeWatched.)
-     * (A sprite that was removed from the folder stays as it is until the game is started again.)
+     * A sprite that was removed from the folder goes back to what it was before the folder's sprite took its place
+     * ({@link Was}).
      */
     public static void watch(){
         long now = Time.millis();
@@ -125,8 +196,30 @@ public class Outlines{
     private static int take(Fi folder){
         Texture old = watchedTexture;
         int count = make(folder, true);
+        // also when the folder brought nothing (the texture stays then): sprites may have gone back to what they were
+        if(old != null) recache();
         if(old != null && old != watchedTexture) old.dispose();
         return count;
+    }
+
+    /**
+     * Some blocks the game does not draw anew every frame: walls, routers, junctions, sorters, gates and more
+     * (Block.drawCached) are drawn once into a mesh for their part of the map, and that mesh is shown until a block in
+     * it changes (BlockRenderer.cacheChunk). The mesh holds the texture and the place of each sprite as they were when
+     * it was made - so after the sprites had been read again these blocks still showed the texture of before, which
+     * had just been thrown away: plain black squares (the maker pressed "read pictures again" and a row of blocks
+     * went black). Every part of the map that holds such a block is marked to be drawn anew.
+     */
+    private static void recache(){
+        try{
+            if(Vars.headless || Vars.renderer == null || Vars.renderer.blocks == null || Vars.world == null || Vars.world.tiles == null) return;
+            for(Tile tile : Vars.world.tiles){
+                Block block = tile.block();
+                if(block != null && block.drawCached) Vars.renderer.blocks.recacheBuilding(block.buildingCacheLayer, tile);
+            }
+        }catch(Throwable t){
+            Log.err("[mshaders] blocks the game draws from a mesh not drawn anew", t);
+        }
     }
 
     /**
@@ -254,7 +347,23 @@ public class Outlines{
                 targets.add(region);
             }
         }
-        if(made.isEmpty()) return 0;
+        if(made.isEmpty()){
+            // the folder brings nothing any more: all it had brought goes back (its texture stays, nothing points at it)
+            if(every) giveBack(new Seq<>());
+            return 0;
+        }
+        int count = made.size;
+        // The sprites of the mod itself go into the game's own sprite texture, where there is room (fit). Those of a
+        // watched folder do not: they are read again and again while the game runs.
+        if(!every){
+            try{
+                int fitted = fit(made, targets);
+                Log.info("[mshaders] @ of @ outlined sprite(s) put into the game's own sprite texture", fitted, count);
+            }catch(Throwable t){
+                Log.err("[mshaders] outlined sprites stay in a texture of their own", t);
+            }
+            if(made.isEmpty()) return count;
+        }
 
         // all of them side by side in one texture, with a gap between them
         int gap = 2, width = gap, height = 0;
@@ -282,6 +391,12 @@ public class Outlines{
             watchedTexture = texture;
         }
 
+        if(every){
+            for(AtlasRegion region : targets){
+                if(!before.containsKey(region)) before.put(region, new Was(region));
+            }
+            giveBack(targets);
+        }
         for(int i = 0; i < made.size; i++){
             AtlasRegion region = targets.get(i);
             Pixmap map = made.get(i);
@@ -292,7 +407,180 @@ public class Outlines{
             region.pixmapRegion = null;
             map.dispose();
         }
-        return made.size;
+        return count;
+    }
+
+    private static final int cell = 8, around = 2;
+    private static FrameBuffer probe;
+    private static java.nio.ByteBuffer probed;
+
+    /**
+     * Puts the sprites into the texture each of their targets is in already - the game's own sprite texture - wherever
+     * that has a free patch, and points the targets there. Those that found a place are taken off both lists.
+     *
+     * Why: a sprite in another texture than the one before it ends the run of sprites the game hands to the graphics
+     * card in one go. Kept in a texture of their own, the outlined sprites (heads and parts of turrets, bodies and
+     * weapons of units) did that twice each time one was drawn among the game's sprites: measured on a test base of
+     * 309 blocks and eight units, a frame went from 56 draw calls to 213 - with every effect of the mod switched off.
+     * A desktop card does not mind; a phone does, and a large base is thousands of them. (The maker: "even with every
+     * option off the frame rate is lower than without the mod - why?")
+     *
+     * A free patch: no sprite of the game's list lies there (each with a few pixels to spare), and what is there reads
+     * back as empty. The texture of the interface is left alone (the letters live there, and are in no list).
+     * @return how many were placed
+     */
+    private static int fit(Seq<Pixmap> made, Seq<AtlasRegion> targets){
+        Texture ui = Core.atlas.find("whiteui").texture;
+        boolean[] done = new boolean[made.size];
+        int placed = 0;
+        // First of all: right where the target is now. The outlined picture is larger than the sprite by the width of
+        // the outline on every side - but where the drawing keeps that far from the edge of its file (as the game's
+        // own sprites do), the added rim is empty, and without it the picture is exactly as large as the place its
+        // target has in the texture. Nothing else is touched, and the sprite keeps its size and its place.
+        for(int i = 0; i < made.size; i++){
+            AtlasRegion region = targets.get(i);
+            Texture page = region.texture;
+            if(page == null || page == ui || page.getMinFilter().isMipMap()) continue;
+            Pixmap map = made.get(i);
+            int x = Math.round(Math.min(region.u, region.u2) * page.width), y = Math.round(Math.min(region.v, region.v2) * page.height);
+            int w = Math.round(Math.abs(region.u2 - region.u) * page.width), h = Math.round(Math.abs(region.v2 - region.v) * page.height);
+            int pad = (map.width - w) / 2;
+            if(pad < 0 || map.width - w != pad * 2 || map.height - h != pad * 2 || w < 1 || h < 1) continue;
+            Pixmap part = map;
+            if(pad > 0){
+                boolean rim = false;
+                for(int py = 0; py < map.height && !rim; py++){
+                    for(int px = 0; px < map.width; px++){
+                        if(px >= pad && px < map.width - pad && py >= pad && py < map.height - pad){
+                            // straight across the middle
+                            px = map.width - pad - 1;
+                            continue;
+                        }
+                        if((map.get(px, py) & 0xff) != 0){
+                            rim = true;
+                            break;
+                        }
+                    }
+                }
+                if(rim) continue;
+                part = map.crop(pad, pad, w, h);
+            }
+            page.bind();
+            Gl.pixelStorei(Gl.unpackAlignment, 1);
+            part.pixels.position(0);
+            Gl.texSubImage2D(Gl.texture2d, 0, x, y, w, h, Gl.rgba, Gl.unsignedByte, part.pixels);
+            if(part != map) part.dispose();
+            region.pixmapRegion = null;
+            done[i] = true;
+            placed++;
+        }
+        int inPlace = placed;
+        Seq<Texture> pages = new Seq<>();
+        for(AtlasRegion target : targets){
+            if(target.texture != null && !pages.contains(target.texture, true)) pages.add(target.texture);
+        }
+        for(Texture page : pages){
+            if(page == ui || page.getMinFilter().isMipMap()) continue;
+            int tw = page.width, th = page.height, gw = tw / cell, gh = th / cell;
+            if(gw < 4 || gh < 4) continue;
+            boolean[] used = new boolean[gw * gh];
+            for(AtlasRegion r : Core.atlas.getRegions()){
+                if(r.texture != page) continue;
+                mark(used, gw, gh, Math.round(Math.min(r.u, r.u2) * tw) - 4, Math.round(Math.min(r.v, r.v2) * th) - 4,
+                    Math.round(Math.max(r.u, r.u2) * tw) + 4, Math.round(Math.max(r.v, r.v2) * th) + 4);
+            }
+            // the tallest first
+            Seq<Integer> order = new Seq<>();
+            for(int i = 0; i < made.size; i++){
+                if(!done[i] && targets.get(i).texture == page) order.add(i);
+            }
+            if(order.isEmpty()) continue;
+            order.sort((a, b) -> made.get(b).height - made.get(a).height);
+            int[] sums = new int[(gw + 1) * (gh + 1)];
+            for(int index : order){
+                Pixmap map = made.get(index);
+                int w = map.width + around * 2, h = map.height + around * 2, cw = (w + cell - 1) / cell, ch = (h + cell - 1) / cell;
+                if(cw > gw || ch > gh || w > 512 || h > 512) continue;
+                // a few tries: a patch that does not read back as empty is struck off, and the next one is looked for
+                for(int tries = 0; tries < 6; tries++){
+                    // how many cells are taken above and to the left of each: tells whether a block of cells is free in one step
+                    for(int y = 0; y < gh; y++){
+                        int row = 0;
+                        for(int x = 0; x < gw; x++){
+                            if(used[y * gw + x]) row++;
+                            sums[(y + 1) * (gw + 1) + x + 1] = sums[y * (gw + 1) + x + 1] + row;
+                        }
+                    }
+                    int at = -1;
+                    search:
+                    for(int y = 0; y + ch <= gh; y++){
+                        for(int x = 0; x + cw <= gw; x++){
+                            if(sums[(y + ch) * (gw + 1) + x + cw] - sums[y * (gw + 1) + x + cw] - sums[(y + ch) * (gw + 1) + x] + sums[y * (gw + 1) + x] == 0){
+                                at = y * gw + x;
+                                break search;
+                            }
+                        }
+                    }
+                    if(at < 0) break;
+                    int px = at % gw * cell, py = at / gw * cell;
+                    mark(used, gw, gh, px, py, px + cw * cell, py + ch * cell);
+                    if(!empty(page, px, py, cw * cell, ch * cell)) continue;
+                    page.bind();
+                    Gl.pixelStorei(Gl.unpackAlignment, 1);
+                    map.pixels.position(0);
+                    Gl.texSubImage2D(Gl.texture2d, 0, px + around, py + around, map.width, map.height, Gl.rgba, Gl.unsignedByte, map.pixels);
+                    AtlasRegion region = targets.get(index);
+                    region.set(page, px + around, py + around, map.width, map.height);
+                    region.offsetX = region.offsetY = 0f;
+                    region.packedWidth = region.originalWidth = map.width;
+                    region.packedHeight = region.originalHeight = map.height;
+                    region.pixmapRegion = null;
+                    done[index] = true;
+                    placed++;
+                    break;
+                }
+            }
+        }
+        Log.info("[mshaders] outlined sprites: @ written where their sprite was, @ into a free patch of the same texture", inPlace, placed - inPlace);
+        for(int i = made.size - 1; i >= 0; i--){
+            if(!done[i]) continue;
+            made.get(i).dispose();
+            made.remove(i);
+            targets.remove(i);
+        }
+        return placed;
+    }
+
+    private static void mark(boolean[] used, int gw, int gh, int x0, int y0, int x1, int y1){
+        int cx0 = Math.max(Math.floorDiv(x0, cell), 0), cy0 = Math.max(Math.floorDiv(y0, cell), 0);
+        int cx1 = Math.min(Math.floorDiv(Math.max(x1 - 1, x0), cell), gw - 1), cy1 = Math.min(Math.floorDiv(Math.max(y1 - 1, y0), cell), gh - 1);
+        for(int y = cy0; y <= cy1; y++){
+            for(int x = cx0; x <= cx1; x++) used[y * gw + x] = true;
+        }
+    }
+
+    /** Is that patch of the texture empty - nothing in it that shows? Drawn into a small buffer and read back from there. */
+    private static boolean empty(Texture page, int x, int y, int w, int h){
+        if(probe == null){
+            probe = new FrameBuffer(512, 512);
+            probed = arc.util.Buffers.newByteBuffer(512 * 512 * 4);
+        }
+        Draw.flush();
+        arc.math.Mat before = new arc.math.Mat(Draw.proj());
+        probe.begin(Color.clear);
+        Draw.proj(new arc.math.Mat().setOrtho(0f, 0f, 512f, 512f));
+        Draw.reset();
+        Draw.rect(new TextureRegion(page, x, y, w, h), w / 2f, h / 2f, w, h);
+        Draw.flush();
+        probed.clear();
+        Gl.pixelStorei(Gl.packAlignment, 1);
+        Gl.readPixels(0, 0, w, h, Gl.rgba, Gl.unsignedByte, probed);
+        probe.end();
+        Draw.proj(before);
+        for(int i = 0, n = w * h * 4; i < n; i++){
+            if(probed.get(i) != 0) return false;
+        }
+        return true;
     }
 
     /** That sprite with the outline of that block around it, in a picture larger by the width of the outline on every side; null if it has an outline already. */

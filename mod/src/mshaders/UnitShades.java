@@ -81,6 +81,13 @@ public class UnitShades{
         return mask != null && frame == Core.graphics.getFrameId() && drawn > 0;
     }
 
+    /**
+     * Where each unit in this frame's picture is, and how far from there what is drawn of it reaches: x, y, radius -
+     * three numbers a unit. For the light pass, which leaves the search for units out where none can be in the way
+     * (Scene.blitByLights).
+     */
+    public final arc.struct.FloatSeq spots = new arc.struct.FloatSeq();
+
     /** How many shapes were drawn into this frame's picture. */
     public int drawn(){
         return frame == Core.graphics.getFrameId() ? drawn : 0;
@@ -102,6 +109,22 @@ public class UnitShades{
      */
     public void draw(int width, int height, float flyHeight){
         if(mask == null) return;
+        spots.clear();
+        // looked first: with no unit in view there is no picture to make (it would be empty, and nobody reads an empty one)
+        Rect near = Core.camera.bounds(Tmp.r1).grow(48f);
+        boolean any = false;
+        for(Unit unit : Groups.unit){
+            if(!(unit instanceof BlockUnitc) && near.contains(unit.x, unit.y)){
+                any = true;
+                break;
+            }
+        }
+        if(!any){
+            drawn = 0;
+            top = 0f;
+            frame = Core.graphics.getFrameId();
+            return;
+        }
         Draw.flush();
         mask.resize(Math.max(width, 2), Math.max(height, 2));
         Draw.sort(false);
@@ -119,12 +142,27 @@ public class UnitShades{
             if(unit instanceof BlockUnitc || !view.contains(unit.x, unit.y)) continue;
             UnitType type = unit.type;
             float hit = unit.hitSize;
+            // how far from the unit's middle what is drawn of it reaches (spots)
+            float reach = hit * 0.45f;
             if(unit instanceof Legsc legged && legged.legs().length > 0){
                 float lift = lift(type, hit);
                 round(unit.x, unit.y, hit * 0.45f, lift, lift + Mathf.clamp(hit * 0.5f, 4f, 14f));
                 float foot = type.footRegion.found() ? type.footRegion.width * type.footRegion.scl() * 0.4f : thick(type);
-                for(Leg leg : legged.legs()) round(leg.base.x, leg.base.y, Math.max(foot, 1.5f), 0f, 3f);
-            }else if(unit.isFlying()){
+                Leg[] legs = legged.legs();
+                for(int i = 0; i < legs.length; i++){
+                    Leg leg = legs[i];
+                    round(leg.base.x, leg.base.y, Math.max(foot, 1.5f), 0f, 3f);
+                    // feet, and the bars of the legs drawn below: from the hip to the knee to the foot
+                    Vec2 hip = legged.legOffset(Tmp.v2, i).add(unit.x, unit.y);
+                    float half = thick(type);
+                    reach = Math.max(reach, Math.max(Mathf.dst(unit.x, unit.y, leg.base.x, leg.base.y) + Math.max(foot, 1.5f),
+                        Math.max(Mathf.dst(unit.x, unit.y, leg.joint.x, leg.joint.y), Mathf.dst(unit.x, unit.y, hip.x, hip.y)) + half));
+                }
+                spots.add(unit.x, unit.y, reach);
+                continue;
+            }
+            spots.add(unit.x, unit.y, reach);
+            if(unit.isFlying()){
                 float hang = Mathf.clamp(unit.elevation) * flyHeight + flyGap;
                 round(unit.x, unit.y, hit * 0.45f, hang, hang + flyThick);
             }else{

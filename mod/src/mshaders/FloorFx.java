@@ -73,7 +73,20 @@ public class FloorFx{
 
     public void init(){
         try{
-            layer = new ShaderLayer(new GroundShader(this, ShaderMod.source("mshaders-ground.frag")), false);
+            layer = new ShaderLayer(new GroundShader(this, ShaderMod.source("mshaders-ground.frag")), false){
+                // timed for the developer option "time of each step": the floor tiles of these kinds and the shader over them
+                @Override
+                public void begin(){
+                    Clock.begin("ground");
+                    super.begin();
+                }
+
+                @Override
+                public void end(){
+                    super.end();
+                    Clock.end();
+                }
+            };
             kindOf = new byte[Vars.content.blocks().size];
             for(Kind kind : kinds){
                 for(String name : kind.names){

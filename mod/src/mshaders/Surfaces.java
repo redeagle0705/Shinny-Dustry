@@ -56,9 +56,16 @@ import mindustry.world.draw.*;
  *   gloss maps:   mshaders-gloss/<sprite>.png  in the data folder, then  gloss/<sprite>.png  in the mod - a picture
  *                 that says how glossy each pixel of that sprite is: black = matt, mid grey = half polished,
  *                 white = polished metal. Where it is transparent, and for a sprite without one, the
- *                 pixel is as glossy as the block is as a whole (Gloss.java: what it is built from). It goes along
+ *                 pixel is as glossy as the table of gloss by colour says for the colour the sprite has there
+ *                 (GlossColors.java, mshaders/gloss-colors.properties) - so a map is needed only where one colour
+ *                 shines in two ways - and where the table says nothing, as glossy as the block is as a whole
+ *                 (Gloss.java: what it is built from). It goes along
  *                 with the sprite's normal or height map and does nothing without one.
  * (The data folder comes first so a picture can be tried without rebuilding the mod.)
+ * FOLDERS INSIDE THOSE FOLDERS: a picture is found by its name alone, however deep it lies - so the pictures can be
+ * sorted the way the game sorts its sprites and the way sprites-override/ has to be
+ * (gloss/blocks/distribution/conveyors/conveyor-0-0.png, normals/units/weapons/missiles-mount.png), or lie loose as
+ * before. Where one name is there twice in a folder, the picture saved last counts ({@link #shelf}).
  *
  * DRAWING WITH THE GAME OPEN: those folders are looked at twice a second, and when a picture in them has been saved,
  * added or removed, all maps are read again - what is on screen changes within a second or two, without a restart.
@@ -73,6 +80,9 @@ import mindustry.world.draw.*;
  * turret of that size - and <name> for the head; for a conveyor
  * <name>-<shape 0..6>-<frame 0..3>, or <name>-<shape> for a picture that serves all four frames. A frame without a
  * picture of its own uses the nearest frame of that shape that has one, so the shading does not blink while the belt runs.
+ * A door also has <name>-open, used while it stands open; a thruster <name>-top, which turns with it; and a block the
+ * game draws as one of several sprites (the scrap walls) has one picture per sprite: <name>1, <name>2, ... - the game
+ * picks one by where the building stands, and so is the map picked.
  * Where a sprite has both kinds of map, the setting "prefer height maps" picks.
  *
  * UNITS have maps the same way, in the same folders, by the names of their sprites:
@@ -95,6 +105,8 @@ public class Surfaces{
     private static final String[] suffixes = {"", "-rotator", "-top"};
     /** The second layer of a block with a head that turns (mass driver, turrets): that head. */
     private static final int head = 1;
+    /** The second layer of a door: the sprite it has while it stands open. Of a thruster: its top, which turns with it. */
+    private static final int ajar = 1, lid = 1;
     /** Conveyor sprites: Conveyor.regions, "@-#1-#2" with lengths {7, 4}. */
     private static final int beltShapes = 7, beltFrames = 4;
 
@@ -103,6 +115,11 @@ public class Surfaces{
     private static final String[] folders = {"normals", "heightmaps"};
     /** The folder of the pictures that say how glossy each pixel is; found by the same sprite names. */
     private static final String glossFolder = "gloss";
+    /** The folder of the sprites drawn for this mod: gloss by colour goes by their colours (GlossColors.java). */
+    private static final String spriteFolder = "sprites-override";
+    /** True while the gloss maps are left out and the table of gloss by colour alone counts (a developer option, to compare). */
+    private boolean mapsOff;
+    private int byColour;
     /**
      * How the gloss travels: in the blue of every pixel, beside what the pixel is. A direction needs only its red and
      * green (the part pointing up follows from them), a height only its red - so blue is free, and is split in two:
@@ -200,9 +217,12 @@ public class Surfaces{
 
     private static Fi find(String folder, String name){
         // the player's own picture in the data folder comes before everything
-        Fi file = Vars.dataDirectory.child("mshaders-" + folder).child(name + ".png");
-        if(file.exists()) return file;
-        file = Vars.tree.get(folder + "/" + name + ".png");
+        Fi file = shelf("data:" + folder, Vars.dataDirectory.child("mshaders-" + folder)).get(name);
+        if(file != null) return file;
+        mindustry.mod.Mods.LoadedMod mod = Vars.mods.getMod(ShaderMod.class);
+        file = shelf("own:" + folder, mod == null || mod.root == null ? null : mod.root.child(folder)).get(name);
+        // as before there were folders inside the folders: whatever the game's file tree has under that plain name
+        if(file == null) file = Vars.tree.get(folder + "/" + name + ".png");
         Fi watch = watched();
         if(watch != null){
             // The watched folder against the mod's own copy of the same picture: the one saved last counts. (The
@@ -210,10 +230,47 @@ public class Surfaces{
             // mod folder was passed over for an older one in the watched folder: "I painted it black and it still
             // shines.") A deploy copies the watched folder's pictures with their dates, so untouched copies tie, and
             // the watched folder wins a tie.
-            Fi drawn = watch.child(folder).child(name + ".png");
-            if(drawn.exists() && !(file.exists() && file.lastModified() > drawn.lastModified() + 3000L)) return drawn;
+            Fi drawn = shelf("watch:" + folder, watch.child(folder)).get(name);
+            if(drawn != null && !(file.exists() && file.lastModified() > drawn.lastModified() + 3000L)) return drawn;
         }
         return file.exists() ? file : null;
+    }
+
+    /** The pictures of each folder that has been looked through since the maps were last read, by sprite name. */
+    private static final ObjectMap<String, ObjectMap<String, Fi>> shelves = new ObjectMap<>();
+
+    /**
+     * Every picture in a folder and in the folders inside it, by its name without ".png". The maker sorts the
+     * pictures into folders the way sprites-override/ is sorted (blocks/distribution/conveyors/...), and a sprite's
+     * name is one of a kind in the game, so the name alone says which picture is meant. A name that is there twice -
+     * a picture saved loose into the folder out of habit, beside the sorted one - goes to the one saved last, and the
+     * log says so.
+     * @param key which folder (kept until the maps are read again), dir may be null or missing
+     */
+    private static ObjectMap<String, Fi> shelf(String key, Fi dir){
+        ObjectMap<String, Fi> shelf = shelves.get(key);
+        if(shelf != null) return shelf;
+        ObjectMap<String, Fi> made = new ObjectMap<>();
+        shelves.put(key, made);
+        try{
+            if(dir != null && dir.exists() && dir.isDirectory()){
+                dir.walk(file -> {
+                    if(!file.extEquals("png")) return;
+                    String name = file.nameWithoutExtension();
+                    Fi other = made.get(name);
+                    if(other == null){
+                        made.put(name, file);
+                        return;
+                    }
+                    boolean later = file.lastModified() > other.lastModified();
+                    Log.warn("[mshaders] @ is there twice: @ and @ - the one saved last is used (@)", name, other.path(), file.path(), (later ? file : other).path());
+                    if(later) made.put(name, file);
+                });
+            }
+        }catch(Throwable t){
+            Log.err("[mshaders] the pictures in " + key + " could not be listed", t);
+        }
+        return made;
     }
 
     private static Fi watchDir;
@@ -261,13 +318,22 @@ public class Surfaces{
             for(int place = 0; place < 3; place++){
                 Fi dir = place == 0 ? (watch == null ? null : watch.child(folder)) : place == 1 ? Vars.dataDirectory.child("mshaders-" + folder) : (own == null ? null : own.child(folder));
                 if(dir == null || !dir.exists() || !dir.isDirectory()) continue;
-                for(Fi file : dir.list()){
-                    if(!file.extEquals("png")) continue;
-                    sum = sum * 31 + file.name().hashCode();
-                    sum = sum * 31 + file.lastModified();
-                    sum = sum * 31 + file.length();
-                }
+                // the folders inside too; a picture moved from one of them to another counts as a change (path)
+                long[] part = {0};
+                dir.walk(file -> {
+                    if(!file.extEquals("png")) return;
+                    part[0] = part[0] * 31 + file.path().hashCode();
+                    part[0] = part[0] * 31 + file.lastModified();
+                    part[0] = part[0] * 31 + file.length();
+                });
+                sum = sum * 31 + part[0];
             }
+        }
+        // the table of gloss by colour: saved, it is read again like a picture
+        for(Fi file : GlossColors.files()){
+            if(file == null) continue;
+            sum = sum * 31 + file.lastModified();
+            sum = sum * 31 + file.length();
         }
         return sum;
     }
@@ -295,6 +361,11 @@ public class Surfaces{
         read = holds;
         reload();
         return true;
+    }
+
+    /** To be called every frame: reads the maps again when "gloss by colour only" has been switched. */
+    public void sync(){
+        if(Core.settings.getBool(ShaderMod.devGlossTable, false) != mapsOff) reload();
     }
 
     /** Reads all maps again now, whatever the folders held before (the "read pictures again" button). */
@@ -335,18 +406,33 @@ public class Surfaces{
      * the height; blue = the gloss of the pixel, in the range of its kind (heightBlue, normalBlue), or the top of that
      * range for "as glossy as the block". "gloss" is the gloss map of the sprite, or null.
      */
-    private static void encode(Pixmap map, int kind, Pixmap gloss){
+    private static boolean encode(Pixmap map, int kind, Pixmap gloss, Pixmap colours, Pixmap team, String sprite, String owner){
         if(gloss != null && (gloss.width != map.width || gloss.height != map.height)){
             Log.warn("[mshaders] a gloss map of @x@ does not fit its @x@ sprite and is left out", gloss.width, gloss.height, map.width, map.height);
             gloss = null;
         }
+        // the sprite itself, for gloss by colour: only where it lies pixel on pixel under the map
+        if(colours != null && (colours.width != map.width || colours.height != map.height)) colours = null;
+        if(team != null && (team.width != map.width || team.height != map.height)) team = null;
+        boolean told = false;
         for(int x = 0; x < map.width; x++){
             for(int y = 0; y < map.height; y++){
                 int c = map.get(x, y);
                 if((c & 0xff) < 128) continue;
                 int g = gloss == null ? 0 : gloss.get(x, y);
                 // the pixel's own gloss in the lower part of the range; the top of the range = the block's
-                float glossy = (g & 0xff) < 128 ? 1f : level(g) * ownShare;
+                float glossy;
+                if((g & 0xff) >= 128){
+                    glossy = level(g) * ownShare;
+                }else{
+                    // no gloss painted here: what the table says for the colour the sprite has here (GlossColors.java)
+                    int paint = colours == null ? 0 : colours.get(x, y);
+                    // the piece in the team's colour lies over the sprite: there the table is asked for "team" first
+                    int by = team != null && (team.get(x, y) & 0xff) >= 128 ? GlossColors.of(sprite, owner, GlossColors.team) : -1;
+                    if(by < 0 && colours != null) by = GlossColors.of(sprite, owner, (paint & 0xff) < 128 ? GlossColors.clear : paint >>> 8);
+                    glossy = by < 0 ? 1f : by / 255f * ownShare;
+                    told |= by >= 0;
+                }
                 if(kind == byHeight){
                     map.set(x, y, Color.rgba8888((c >>> 24) / 255f, 0f, heightBlue * glossy, 1f));
                 }else{
@@ -356,6 +442,7 @@ public class Surfaces{
                 }
             }
         }
+        return told;
     }
 
     /** The sprite names of a block, one per slot of its region arrays. */
@@ -373,6 +460,17 @@ public class Surfaces{
             // a turret may be put together from parts that move on their own (DrawTurret.parts): one picture per part sprite
             if(block instanceof Turret turret && turret.drawer instanceof DrawTurret drawer) partNames(drawer.parts, names);
             return names.toArray(String.class);
+        }
+        // a door has a second sprite, drawn while it stands open (Door.openRegion, AutoDoor.openRegion)
+        if(block instanceof Door || block instanceof AutoDoor) return new String[]{block.name, block.name + "-open"};
+        // the top of a thruster is a sprite of its own, turned with the building (Thruster.topRegion)
+        if(block instanceof Thruster) return new String[]{block.name, block.name + "-top"};
+        // a building drawn as one of several sprites, picked by where it stands (Block.variants: the scrap walls):
+        // "<name>1", "<name>2", ... as Block.load() names them - there is no sprite with the block's own name
+        if(block.variants > 0 && block.hasBuilding()){
+            String[] names = new String[block.variants];
+            for(int i = 0; i < names.length; i++) names[i] = block.name + (i + 1);
+            return names;
         }
         return new String[]{block.name};
     }
@@ -459,10 +557,17 @@ public class Surfaces{
 
     /**
      * Reads that picture, with the gloss map that goes with it, unless it has been read already.
+     * @param sprite the name of the sprite it is for, owner the name of its block (null for a unit's)
      * @return its place among the pictures (maps)
      */
-    private int read(int kind, Fi file, Fi glossFile){
-        String key = kind + ":" + file.path() + (glossFile == null ? "" : "|" + glossFile.path());
+    private int read(int kind, Fi file, Fi glossFile, String sprite, String owner){
+        if(mapsOff) glossFile = null;
+        // gloss by colour goes by the sprite's own picture, and the table may say something else for this sprite or block
+        Fi paint = GlossColors.any() ? find(spriteFolder, sprite) : null;
+        // the piece in the team's colour that the game lays over the base of a block (Block.teamRegion: <name>-team)
+        Fi side = paint != null && sprite.equals(owner) && GlossColors.of(sprite, owner, GlossColors.team) >= 0 ? find(spriteFolder, sprite + "-team") : null;
+        String key = kind + ":" + file.path() + (glossFile == null ? "" : "|" + glossFile.path())
+            + (paint == null ? "" : "|" + paint.path() + (GlossColors.has(sprite) ? "|" + sprite : "") + (GlossColors.has(owner) ? "|" + owner : "") + (side == null ? "" : "|" + side.path()));
         int index = known.get(key, -1);
         if(index >= 0) return index;
         Pixmap map = new Pixmap(file);
@@ -472,7 +577,10 @@ public class Surfaces{
             map = made;
         }
         Pixmap gloss = glossFile == null ? null : new Pixmap(glossFile);
-        encode(map, kind, gloss);
+        Pixmap colours = paint == null ? null : new Pixmap(paint), team = side == null ? null : new Pixmap(side);
+        if(encode(map, kind, gloss, colours, team, sprite, owner)) byColour++;
+        if(colours != null) colours.dispose();
+        if(team != null) team.dispose();
         if(gloss != null){
             gloss.dispose();
             glossMaps++;
@@ -499,10 +607,13 @@ public class Surfaces{
     private static final int unitWeapons = 4;
 
     private void load(){
+        shelves.clear();
         maps.clear();
         known.clear();
         found[byNormal] = found[byHeight] = 0;
-        glossMaps = 0;
+        glossMaps = byColour = 0;
+        mapsOff = Core.settings.getBool(ShaderMod.devGlossTable, false);
+        GlossColors.load();
         Seq<Block> owners = new Seq<>();
         IntSeq kinds = new IntSeq(), slots = new IntSeq(), which = new IntSeq();
         Seq<UnitType> unitOwners = new Seq<>();
@@ -517,7 +628,7 @@ public class Surfaces{
                     unitOwners.add(type);
                     unitKinds.add(kind);
                     unitSlots.add(slot);
-                    unitWhich.add(read(kind, file, find(glossFolder, names[slot])));
+                    unitWhich.add(read(kind, file, find(glossFolder, names[slot]), names[slot], null));
                 }
             }
         }
@@ -535,7 +646,7 @@ public class Surfaces{
                     owners.add(block);
                     kinds.add(kind);
                     slots.add(slot);
-                    which.add(read(kind, file, glossFile));
+                    which.add(read(kind, file, glossFile, names[slot], block.name));
                 }
             }
         }
@@ -621,7 +732,8 @@ public class Surfaces{
                 }
             }
         }
-        Log.info("[mshaders] surface maps: @ normal map(s) and @ height map(s) for @ block(s) and @ kind(s) of unit, @ of them with a gloss map", found[byNormal], found[byHeight], layers.size, looks.size, glossMaps);
+        Log.info("[mshaders] surface maps: @ normal map(s) and @ height map(s) for @ block(s) and @ kind(s) of unit, @ of them with a gloss map@, @ with gloss by colour",
+            found[byNormal], found[byHeight], layers.size, looks.size, glossMaps, mapsOff ? " (gloss maps are left out: developer option)" : "", byColour);
     }
 
     /** The layer the game draws that unit on (UnitType.draw). */
@@ -864,8 +976,21 @@ public class Surfaces{
             }
             return true;
         }
+        if(build instanceof Thruster.ThrusterBuild){
+            // Thruster.ThrusterBuild.drawCached(): the body sits still, the top turns with the building
+            layer(pick(of, base), build.x, build.y, false, false, 0f);
+            layer(pick(of, lid), build.x, build.y, false, false, build.rotdeg());
+            return true;
+        }
+        // which of its sprites the game draws right now: a door's open one while it stands open (Door.DoorBuild.draw,
+        // AutoDoor.AutoDoorBuild.draw), else the one picked by the place of the building (Building.draw)
+        int slot = base;
+        if(build instanceof Door.DoorBuild door) slot = door.open ? ajar : base;
+        else if(build instanceof AutoDoor.AutoDoorBuild door) slot = door.open ? ajar : base;
+        else if(block.variants > 0 && block.variantRegions != null) slot = Mathf.randomSeed(build.tile.pos(), 0, Math.max(0, block.variantRegions.length - 1));
+        if(slot >= of[byNormal].length) slot = base;
         // the base: turned with the building only for blocks whose sprite the game turns
-        layer(pick(of, base), build.x, build.y, false, false, block.rotate && block.rotateDraw ? build.rotdeg() : 0f);
+        layer(pick(of, slot), build.x, build.y, false, false, block.rotate && block.rotateDraw ? build.rotdeg() : 0f);
         if(build instanceof Drill.DrillBuild drill){
             // Drill.DrillBuild.draw(): the rotator spins by timeDrilled * rotateSpeed, the top sits still
             layer(pick(of, rotator), build.x, build.y, false, false, drill.timeDrilled * ((Drill)block).rotateSpeed);

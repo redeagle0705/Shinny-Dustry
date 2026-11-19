@@ -17,12 +17,37 @@ public class ShaderMod extends Mod{
     floorGrass = "mshaders-floor-grass", floorHot = "mshaders-floor-hot", floorMetal = "mshaders-floor-metal", floorRelief = "mshaders-floor-relief",
     reflectOn = "mshaders-reflect", reflectStrength = "mshaders-reflect-strength",
     shadowOn = "mshaders-shadow", shadowLength = "mshaders-shadow-length", shadowStrength = "mshaders-shadow-strength", shadowCycle = "mshaders-shadow-cycle", shadowQuality = "mshaders-shadow-quality", sunAngle = "mshaders-sun-angle",
-    lightsOn = "mshaders-lights", lightsStrength = "mshaders-lights-strength", darkDepth = "mshaders-dark-depth", lightsColor = "mshaders-lights-color", lightsMoving = "mshaders-lights-moving", lightsMax = "mshaders-lights-max", lightsAir = "mshaders-lights-air", lightsGround = "mshaders-lights-ground", lightsUnits = "mshaders-lights-units", lightsUnitsDepth = "mshaders-lights-units-depth",
+    lightsOn = "mshaders-lights", lightsStrength = "mshaders-lights-strength", darkDepth = "mshaders-dark-depth", lightsColor = "mshaders-lights-color", lightsMoving = "mshaders-lights-moving", lightsMax = "mshaders-lights-max", lightsDetail = "mshaders-lights-detail", lightsAir = "mshaders-lights-air", lightsShots = "mshaders-lights-shots", shotShadows = "mshaders-shot-shadows", lightsGround = "mshaders-lights-ground", lightsUnits = "mshaders-lights-units", lightsUnitsDepth = "mshaders-lights-units-depth",
     // found, not listed: the slider appears once a thorium reactor has blown up in view (LightTap.reactorBoost)
     reactorFun = "mshaders-reactor-fun", reactorFound = "mshaders-reactor-found",
     glintOn = "mshaders-glint", glintStrength = "mshaders-glint-strength", glintBand = "mshaders-glint-band",
-    normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsMetal = "mshaders-normals-metal", normalsHeight = "mshaders-normals-height", normalsOwnLight = "mshaders-normals-own-light", boostersOn = "mshaders-boosters", boostersTint = "mshaders-boosters-tint", boostersBreath = "mshaders-boosters-breath", devWatch = "mshaders-dev-watch", devButton = "mshaders-dev-button",
-    postOn = "mshaders-post", vignette = "mshaders-vignette", saturation = "mshaders-saturation", contrast = "mshaders-contrast", warmth = "mshaders-warmth";
+    normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsMetal = "mshaders-normals-metal", normalsHeight = "mshaders-normals-height", normalsOwnLight = "mshaders-normals-own-light", boostersOn = "mshaders-boosters", boostersTint = "mshaders-boosters-tint", boostersBreath = "mshaders-boosters-breath", devWatch = "mshaders-dev-watch", devButton = "mshaders-dev-button", devGlossTable = "mshaders-dev-gloss-table", devClock = "mshaders-dev-clock", devSquares = "mshaders-light-squares",
+    postOn = "mshaders-post", vignette = "mshaders-vignette", saturation = "mshaders-saturation", contrast = "mshaders-contrast", warmth = "mshaders-warmth", spare = "mshaders-spare";
+
+    /**
+     * Before the game puts its sprites together (this runs when the mod is loaded, the packing comes later):
+     * room for all of them in ONE texture.
+     *
+     * When any mod brings sprites, the game packs every sprite anew (Mods.loadAsync), largest first, into pages of
+     * 4096 x 4096 (MultiPacker.PageType.main). Its own sprites alone fill such a page to the brim - packed here they
+     * no longer quite fit, and the smallest ones (walls, conveyors, items, small turrets: everything of 32 pixels) end
+     * up on a second page. From then on, every time a small sprite is drawn after a large one the run of sprites the
+     * graphics card is handed in one go ends. Measured on a test base of 309 blocks of eight kinds: 56 draw calls a
+     * frame without the mod, 213 with it - with every effect switched off. A desktop card does not mind; a phone
+     * does, and a large base is thousands of them. (The maker: "even with every option off the frame rate is lower
+     * than without the mod - why?")
+     *
+     * A page of 4096 x 8192 holds them all, and is no more memory than the two pages were (the second one was made
+     * as large as the first, and stood nearly empty). Where the graphics card takes no texture that tall, the game
+     * itself cuts the page back to what it takes (MultiPacker: the smaller of the two), and all is as before.
+     */
+    public ShaderMod(){
+        try{
+            mindustry.graphics.MultiPacker.PageType.main.height = Math.max(mindustry.graphics.MultiPacker.PageType.main.height, 8192);
+        }catch(Throwable t){
+            Log.err("[mshaders] the game's sprite texture stays as it is", t);
+        }
+    }
 
     private EngineDialog engineDialog;
     public final WaterFx water = new WaterFx();
@@ -42,10 +67,10 @@ public class ShaderMod extends Mod{
             floorsOn, true, floorRock, 100, floorSand, 100, floorSnow, 100, floorGrass, 100, floorHot, 100, floorMetal, 100, floorRelief, 100,
             reflectOn, true, reflectStrength, 100,
             shadowOn, true, shadowLength, 15, shadowStrength, 70, shadowCycle, 4, shadowQuality, 80, sunAngle, 45,
-            lightsOn, true, lightsStrength, 100, darkDepth, 50, lightsColor, 100, lightsMoving, 100, lightsMax, 64, lightsAir, 100, lightsGround, 100, lightsUnits, true, lightsUnitsDepth, 65,
+            lightsOn, true, lightsStrength, 100, darkDepth, 50, lightsColor, 100, lightsMoving, 100, lightsMax, 64, lightsDetail, 100, lightsAir, 100, lightsShots, 100, shotShadows, true, lightsGround, 100, lightsUnits, true, lightsUnitsDepth, 65,
             glintOn, true, glintStrength, 100, glintBand, 100,
-            normalsOn, true, normalsStrength, 100, normalsMetal, 100, normalsHeight, true, normalsOwnLight, false, boostersOn, true, boostersTint, true, boostersBreath, 100, devWatch, false, devButton, false,
-            postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15
+            normalsOn, true, normalsStrength, 100, normalsMetal, 100, normalsHeight, true, normalsOwnLight, false, boostersOn, true, boostersTint, true, boostersBreath, 100, devWatch, false, devButton, false, devGlossTable, false, devClock, false, devSquares, true,
+            postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15, spare, 100
         );
 
         // the sprites this mod replaces get back the dark outline the game's own sprites have (turret heads, mass driver)
@@ -108,7 +133,10 @@ public class ShaderMod extends Mod{
             f.slider(lightsColor, 100, 0, 200, 5, i -> i == 0 ? off : i + "%");
             f.slider(lightsMoving, 100, 100, 500, 25, i -> i + "%");
             f.slider(lightsMax, 64, 16, Scene.maxLights, 16, i -> i + "");
+            f.slider(lightsDetail, 100, 25, 100, 25, i -> i + "%");
             f.slider(lightsAir, 100, 0, 300, 25, i -> i == 0 ? off : i + "%");
+            f.slider(lightsShots, 100, 0, 300, 25, i -> i == 0 ? off : i + "%");
+            f.check(shotShadows, true);
             f.slider(lightsGround, 100, 0, 300, 25, i -> i == 0 ? off : i + "%");
             f.secret(reactorFound, reactorFun, 10, 1, 50, 1, i -> "x" + i);
             folds = f;
@@ -138,6 +166,7 @@ public class ShaderMod extends Mod{
             f.slider(saturation, 115, 0, 200, 5, i -> i + "%");
             f.slider(contrast, 108, 50, 150, 2, i -> i + "%");
             f.slider(warmth, 15, -100, 100, 5, i -> (i > 0 ? "+" : "") + i);
+            f.slider(spare, 100, 0, 100, 5, i -> i == 0 ? off : i + "%");
         });
 
         // The two switches for those who draw pictures are no effects: they sit with the game's own developer options
@@ -145,6 +174,9 @@ public class ShaderMod extends Mod{
         try{
             Vars.ui.settings.dev.checkPref(devWatch, false);
             Vars.ui.settings.dev.checkPref(devButton, false);
+            Vars.ui.settings.dev.checkPref(devGlossTable, false);
+            Vars.ui.settings.dev.checkPref(devClock, false);
+            Vars.ui.settings.dev.checkPref(devSquares, true);
         }catch(Throwable t){
             Log.err("[mshaders] the switches for drawing could not be added to the developer options", t);
         }
@@ -163,6 +195,19 @@ public class ShaderMod extends Mod{
             });
         }catch(Throwable t){
             Log.err("[mshaders] the button that reads pictures again could not be made", t);
+        }
+
+        // For finding out what is slow on a machine nobody can attach a profiler to (a phone): the time each step of
+        // the frame takes, in the middle of the screen, while the developer option is on (Clock.java).
+        try{
+            Events.run(mindustry.game.EventType.Trigger.preDraw, Clock::frame);
+            Vars.ui.hudGroup.fill(t -> {
+                t.touchable = arc.scene.event.Touchable.disabled;
+                t.table(mindustry.ui.Styles.black6, box -> box.label(() -> Clock.text).style(mindustry.ui.Styles.outlineLabel).fontScale(0.8f).left()).margin(8f);
+                t.visible(() -> Clock.on && !Clock.text.isEmpty());
+            });
+        }catch(Throwable t){
+            Log.err("[mshaders] the time of each step cannot be shown", t);
         }
 
         Log.info("[mshaders] water shader: @, ice shader: @, ground shaders: @, screen effects: @, light listener: @, directional shadows: @",

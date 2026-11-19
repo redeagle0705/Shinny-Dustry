@@ -29,7 +29,20 @@ public class IceFx{
 
     public void init(Scene scene){
         try{
-            layer = new ShaderLayer(new IceShader(scene), false);
+            layer = new ShaderLayer(new IceShader(scene), false){
+                // timed for the developer option "time of each step"
+                @Override
+                public void begin(){
+                    Clock.begin("ice");
+                    super.begin();
+                }
+
+                @Override
+                public void end(){
+                    super.end();
+                    Clock.end();
+                }
+            };
         }catch(Throwable t){
             layer = null;
             Log.err("[mshaders] ice shader unavailable, ice stays as it is", t);
