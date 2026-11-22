@@ -7,7 +7,8 @@
 #   the APPDATA variable       DesktopLauncher.main() opens %APPDATA%\Mindustry\last_log.txt before that (desktop/.../DesktopLauncher.java:48)
 # The window is not maximized: DesktopLauncher reads -maximized / -width / -height (DesktopLauncher.java:77-78, 95).
 param([string[]]$Mods = @("mshaders", "mshaders-testkit"), [string]$Shots = "", [string]$Out = "screenshots\run", [string]$Map = "archipelago", [string]$Find = "",
-      [int]$Wait = 90, [int]$Width = 1280, [int]$Height = 720, [int]$TimeoutSec = 180)
+      [int]$Wait = 90, [int]$Width = 1280, [int]$Height = 720, [int]$TimeoutSec = 180,
+      [string]$JavaOptions = "")   # -JavaOptions: more JVM options, ";" between them (for example a Java Flight Recorder recording)
 
 $ErrorActionPreference = "Stop"
 $Mods = @($Mods | ForEach-Object { $_ -split "," } | Where-Object { $_ -ne "" })   # "-File" passes a,b as one string
@@ -39,6 +40,7 @@ if ($Shots -ne "") {
     $jvm += @("`"-Dmstest.out=$outDir`"", "`"-Dmstest.shots=$Shots`"", "-Dmstest.map=$Map", "-Dmstest.wait=$Wait")
     if ($Find -ne "") { $jvm += "-Dmstest.find=$Find" }   # floor name to point the camera at instead of water
 }
+if ($JavaOptions -ne "") { $jvm += @($JavaOptions -split ";" | Where-Object { $_ -ne "" } | ForEach-Object { "`"$_`"" }) }
 $jvm += @("-jar", "`"$jar`"", "-maximized", "false", "-width", "$Width", "-height", "$Height")
 
 $oldAppdata = $env:APPDATA

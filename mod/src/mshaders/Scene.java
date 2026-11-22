@@ -356,7 +356,7 @@ public class Scene{
                     set(this, "u_coreOwn", !shapingUnits && !Core.settings.getBool(ShaderMod.normalsOwnLight, false) ? 1f : 0f);
                     set(this, "u_glint", wantGlint ? ShaderMod.percent(ShaderMod.glintStrength, 100) : 0f);
                     set(this, "u_band", ShaderMod.percent(ShaderMod.glintBand, 100));
-                    set(this, "u_bandWave", Core.settings.getBool("mshaders-band-wave", true) ? 1f : 0f);
+                    set(this, "u_bandWave", (float)Core.settings.getInt("mshaders-band-style", 2));
                     set(this, "u_time", Time.globalTime / 60f);
                     // On a dark map the daylight counts for little: what the darkness leaves of it. Lamps then do the lighting.
                     set(this, "u_day", ShaderMod.daylight());
@@ -1455,11 +1455,13 @@ public class Scene{
         set(s, "u_glint", glintReady ? ShaderMod.percent(ShaderMod.glintStrength, 100) : 0f);
         set(s, "u_aimed", aimReady ? 1f : 0f);
         set(s, "u_band", ShaderMod.percent(ShaderMod.glintBand, 100));
-        set(s, "u_bandWave", Core.settings.getBool("mshaders-band-wave", true) ? 1f : 0f);
+        set(s, "u_bandWave", (float)Core.settings.getInt("mshaders-band-style", 2));
         set(s, "u_time", Time.globalTime / 60f);
         set(s, "u_day", ShaderMod.daylight());
         if(s.hasUniform("u_sunDir")) s.setUniformf("u_sunDir", ShaderMod.sunX(), ShaderMod.sunY());
         setCamera(s);
+        Blasts.apply(s);
+        Pulses.apply(s);
         if(lightReady){
             (lightmapNow != null ? lightmapNow : light).getTexture().bind(1);
             set(s, "u_lightmap", 1);

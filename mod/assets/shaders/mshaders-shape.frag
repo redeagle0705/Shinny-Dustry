@@ -32,7 +32,7 @@ uniform vec2 u_sunDir;         // direction towards the sun on the ground, lengt
 uniform float u_aimed;         // 1 when u_aim holds this frame's light directions
 uniform float u_glint;         // metal glint strength, 0 = off
 uniform float u_band;          // strength of the drifting sun band
-uniform float u_bandWave;      // 1 = the band winds and comes at random, 0 = straight, one after another
+uniform float u_bandWave;      // 2 = sun through gaps in clouds, 1 = a winding band at random, 0 = straight bands one after another
 uniform float u_time;          // seconds
 uniform float u_metal;         // how much the top of the gloss scale is shaded as metal: 0 = polished only, 1 = metal
 
@@ -99,13 +99,36 @@ float heightAt(vec2 uv, float own){
 }
 
 
-// The bright band of sunlight that drifts across the map ("dir": the way it travels). Once a straight band every 170
-// world units, one after another at one pace; now its front winds, and the winding drifts along it, and of those
-// places a band could come by only about half bring one, each a little brighter or fainter and wider or narrower - at
-// no steady beat. ("Not straight, wavy, at random intervals", a player asked; u_bandWave 0 gives the old band back.)
+// Smooth noise for the clouds (value noise on a grid of one unit, eased between).
+float cloudHash(vec2 p){
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float cloudNoise(vec2 p){
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(cloudHash(i), cloudHash(i + vec2(1.0, 0.0)), f.x), mix(cloudHash(i + vec2(0.0, 1.0)), cloudHash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+
+// The bright sunlight that drifts across the map ("dir": the way the wind takes it).
+//   u_bandWave 0: as at first, a straight band every 170 world units, one after another at one pace
+//   u_bandWave 1: the band winds and comes at random ("not straight, wavy, at random intervals", a player asked)
+//   u_bandWave 2: no band - sunlight through gaps in clouds that drift over the map: soft patches of sun, a few
+//                 hundred world units across, that grow, shrink and pass ("not lines: as if it went through the places
+//                 without cloud, and was gone again", the maker)
 float sunBand(vec2 world, vec2 dir, float t){
     float along = dot(world, dir);
     if(u_bandWave < 0.5) return pow(0.5 + 0.5 * sin((along / 170.0 - t * 0.22) * 6.2832), 28.0);
+    if(u_bandWave > 1.5){
+        // the clouds move with the wind as the band did; three layers, each turned against the last so the grid of
+        // the noise does not show, the finer ones drifting a little on their own so the gaps change shape
+        vec2 p = (world - dir * t * 37.0) / 300.0;
+        vec2 q = vec2(p.x * 0.8 - p.y * 0.6, p.x * 0.6 + p.y * 0.8);
+        vec2 r = vec2(q.x * 0.8 - q.y * 0.6, q.x * 0.6 + q.y * 0.8);
+        float c = cloudNoise(p) * 0.50 + cloudNoise(q * 2.1 + vec2(5.2 - t * 0.04, 1.3)) * 0.32 + cloudNoise(r * 4.7 + vec2(9.1, -2.7 + t * 0.06)) * 0.18;
+        // a gap where the cloud is thinnest: about a fifth of the ground at a time, with soft edges
+        return smoothstep(0.58, 0.72, c);
+    }
     float across = dot(world, vec2(-dir.y, dir.x));
     along += sin(across / 45.0 + t * 0.35) * 14.0 + sin(across / 110.0 - t * 0.12) * 24.0;
     float p = along / 170.0 - t * 0.22;

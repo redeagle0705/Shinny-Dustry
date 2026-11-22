@@ -66,6 +66,10 @@ public class Shields{
     /** The shields in view this frame, for the waves of light: x, y, radius, a number of its own; at most 8. */
     private static final int inViewKept = 8;
     private static final float[] inView = new float[inViewKept * 4];
+    /** How much of each of those shields is used up: 0 = whole, 1 = about to break (for the cracks). */
+    private static final float[] hurt = new float[inViewKept];
+    /** The shape of each: how many sides, and the angle of its first corner (degrees), as the game draws it (Fill.poly). */
+    private static final float[] shapes = new float[inViewKept * 2];
     private static int inViewCount;
 
     /** The side of a cell of the honeycomb, world units: the same as in mshaders-shield.frag (hexLine). */
@@ -126,6 +130,10 @@ public class Shields{
                     if(hasUniform("u_starts[0]") || hasUniform("u_starts")) setUniform4fv("u_starts", startUniforms, 0, startsKept * 4);
                     setUniformf("u_sheen", on ? ShaderMod.percent(ShaderMod.shieldsSheen, 100) : 0f);
                     for(int i = inViewCount * 4; i < inView.length; i++) inView[i] = 0f;
+                    for(int i = inViewCount; i < hurt.length; i++) hurt[i] = 0f;
+                    setUniformf("u_crack", on ? ShaderMod.percent(ShaderMod.shieldsCrack, 100) : 0f);
+                    if(hasUniform("u_hurt[0]") || hasUniform("u_hurt")) setUniform1fv("u_hurt", hurt, 0, inViewKept);
+                    if(hasUniform("u_sides[0]") || hasUniform("u_sides")) setUniform2fv("u_sides", shapes, 0, inViewKept * 2);
                     if(hasUniform("u_shields[0]") || hasUniform("u_shields")) setUniform4fv("u_shields", inView, 0, inViewKept * 4);
                 }
             };
@@ -190,37 +198,54 @@ public class Shields{
         hit(-1 - tests++, x, y, at);
     }
 
-    /** The shields in view, for the waves of light (u_shields): force projectors, then units with a force field. */
+    /**
+     * The shields in view, for the waves of light and the cracks (u_shields, u_hurt): force projectors, then units with
+     * a force field. How much of a shield is used up: a projector's buildup out of what it holds, a unit's shield out
+     * of its most.
+     */
     private static void findInView(){
         inViewCount = 0;
-        if(!Core.settings.getBool(ShaderMod.shieldsOn, true) || ShaderMod.percent(ShaderMod.shieldsSheen, 100) <= 0f) return;
+        if(!Core.settings.getBool(ShaderMod.shieldsOn, true)
+            || (ShaderMod.percent(ShaderMod.shieldsSheen, 100) <= 0f && ShaderMod.percent(ShaderMod.shieldsCrack, 100) <= 0f
+                && ShaderMod.percent(ShaderMod.shieldsBubble, 100) <= 0f)) return;
         Rect view = Core.camera.bounds(Tmp.r3);
         for(TeamData data : Vars.state.teams.present){
             for(var build : Vars.indexer.getFlagged(data.team, BlockFlag.shield)){
                 if(!(build instanceof ForceBuild force) || force.broken) continue;
                 float radius = force.realRadius();
-                if(radius >= 1f && view.overlaps(force.x - radius, force.y - radius, radius * 2f, radius * 2f)) note(force.x, force.y, radius, force.pos());
+                if(radius >= 1f && view.overlaps(force.x - radius, force.y - radius, radius * 2f, radius * 2f) && force.block instanceof ForceProjector type){
+                    shape(type.sides, type.shieldRotation);
+                    note(force.x, force.y, radius, force.pos(), force.buildup / Math.max(type.shieldHealth + type.phaseShieldBoost * force.phaseHeat, 1f));
+                }
             }
         }
         for(Unit unit : Groups.unit){
             if(unit.shield <= 0f || unit.abilities.length == 0) continue;
             for(Ability ability : unit.abilities){
                 if(ability instanceof ForceFieldAbility field && view.overlaps(unit.x - field.radius, unit.y - field.radius, field.radius * 2f, field.radius * 2f)){
-                    note(unit.x, unit.y, field.radius, unit.id);
+                    shape(field.sides, field.rotation);
+                    note(unit.x, unit.y, field.radius, unit.id, 1f - unit.shield / Math.max(field.scaledMax(unit), 1f));
                     break;
                 }
             }
         }
     }
 
-    private static void note(float x, float y, float radius, int id){
+    private static void shape(int sides, float rotation){
         if(inViewCount >= inViewKept) return;
+        shapes[inViewCount * 2] = sides;
+        shapes[inViewCount * 2 + 1] = rotation;
+    }
+
+    private static void note(float x, float y, float radius, int id, float used){
+        if(inViewCount >= inViewKept) return;
+        hurt[inViewCount] = Mathf.clamp(used);
         int i = inViewCount++ * 4;
         inView[i] = x;
         inView[i + 1] = y;
         inView[i + 2] = radius;
         // a number of its own between 1 and 2 (0 = not in use): which way its waves go and when they come
-        inView[i + 3] = 1f + Mathf.randomSeed(id * 7919L + 13L);
+        inView[i + 3] = 1f + crackSeed(id);
     }
 
     private static boolean turnsOn(){
@@ -266,73 +291,198 @@ public class Shields{
         }
     }
 
-    private static final Color shardColor = new Color(), cellColor = new Color();
+    private static final Color shardColor = new Color(), cellColor = new Color(), edgeColor = new Color();
+    /** The side of a piece of a breaking shield, world units: as large as the broad cracks (mshaders-shield.frag, crackCells). */
+    static final float piece = 16f;
+    private static final FloatSeq poly = new FloatSeq(), clipped = new FloatSeq();
+
+    /** Cuts the polygon in "poly" down to where a * x + b * y <= c (Sutherland-Hodgman, one edge). */
+    private static void clip(float a, float b, float c){
+        clipped.clear();
+        int n = poly.size / 2;
+        for(int i = 0; i < n; i++){
+            float x1 = poly.items[i * 2], y1 = poly.items[i * 2 + 1];
+            float x2 = poly.items[((i + 1) % n) * 2], y2 = poly.items[((i + 1) % n) * 2 + 1];
+            float d1 = a * x1 + b * y1 - c, d2 = a * x2 + b * y2 - c;
+            if(d1 <= 0f) clipped.add(x1, y1);
+            if((d1 < 0f) != (d2 < 0f)){
+                float t = d1 / (d1 - d2);
+                clipped.add(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t);
+            }
+        }
+        poly.clear();
+        poly.addAll(clipped);
+    }
+
+    private static float fract(float x){
+        return x - (float)Math.floor(x);
+    }
+
+    private static float hashX, hashY;
+
+    /** crackHash of mshaders-shield.frag, in floats as the graphics card does it: the first two numbers into hashX, hashY. */
+    private static void crackHash(float px, float py, float pz){
+        float x = fract(px * 0.1031f), y = fract(py * 0.1030f), z = fract(pz * 0.0973f);
+        float d = x * (y + 33.33f) + y * (x + 33.33f) + z * (z + 33.33f);
+        x += d;
+        y += d;
+        z += d;
+        hashX = fract((x + y) * z);
+        hashY = fract((x + x) * y);
+    }
+
+    /** The shield's own number as the shader gets it (u_shields: 1 + it, less 1 there): which way its cracks run. */
+    static float crackSeed(int id){
+        return (1f + Mathf.randomSeed(id * 7919L + 13L)) - 1f;
+    }
+
+    /** The seed of the shield that broke with this effect, found the first time it is drawn. */
+    private static final IntFloatMap breakSeeds = new IntFloatMap();
+    private static float crackSeed;
+
+    private static float seedOf(EffectContainer e){
+        if(breakSeeds.containsKey(e.id)) return breakSeeds.get(e.id, 0f);
+        if(breakSeeds.size > 200) breakSeeds.clear();
+        int id = -1;
+        if(e.data instanceof ForceProjector){
+            var build = Vars.world.buildWorld(e.x, e.y);
+            if(build != null) id = build.pos();
+        }else{
+            for(Unit unit : Groups.unit){
+                if(unit.within(e.x, e.y, 6f)){
+                    for(Ability ability : unit.abilities){
+                        if(ability instanceof ForceFieldAbility) id = unit.id;
+                    }
+                    if(id >= 0) break;
+                }
+            }
+        }
+        float seed = id >= 0 ? crackSeed(id) : Mathf.randomSeed(e.id);
+        breakSeeds.put(e.id, seed);
+        return seed;
+    }
+
+    /** Where the point of the piece at (i, j) of a breaking shield lies: as the shader's cracks have it (crackCells). */
+    private static float siteX(float cx, int i, int j, long salt){
+        crackHash(i, j, crackSeed * 97f);
+        return cx + (i + hashX) * piece;
+    }
+
+    private static float siteY(float cy, int i, int j, long salt){
+        crackHash(i, j, crackSeed * 97f);
+        return cy + (j + hashY) * piece;
+    }
 
     /**
-     * A shield breaking (in place of Fx.shieldBreak): its cells of the honeycomb, drawn into the shields' buffer so the
-     * shader lays them over the screen like the shield itself, go out one by one; each one that goes falls apart into
-     * shards that fly outwards.
+     * A shield breaking (in place of Fx.shieldBreak). It falls apart along cracks into pieces of glass as large as the
+     * broad cracks a worn shield shows (the cells of scattered points, cut to the shield's polygon). First the whole
+     * shield flashes, already cut by thin cracks (the pieces are drawn into the shields' buffer a little apart, and the
+     * shader draws its edge line round each); then the pieces come loose one by one, the middle first, and fly outwards
+     * as panes of glass - turning, shrinking a little, fading. (Before, the honeycomb cells went out and only a third of
+     * them threw small shards: "the shards should be about as big as the cracks", a player said.)
      */
     private static void shatter(EffectContainer e){
         int sides = e.data instanceof ForceProjector f ? f.sides : e.data instanceof ForceFieldAbility a ? a.sides : 6;
         float turn = e.data instanceof ForceProjector f ? f.shieldRotation : e.data instanceof ForceFieldAbility a ? a.rotation : 6f;
         float radius = e.rotation, fin = e.fin();
         if(radius < 2f) return;
-        // larger cells for a very large shield, so it stays a few hundred
-        float side = cell * Math.max(1f, (float)Math.floor(radius / 110f) + 1f);
-        float dx = side, dy = side * 1.7320508f;
-        int x0 = (int)Math.floor((e.x - radius) / dx) - 1, x1 = (int)Math.ceil((e.x + radius) / dx) + 1;
-        int y0 = (int)Math.floor((e.y - radius) / dy) - 1, y1 = (int)Math.ceil((e.y + radius) / dy) + 1;
-        float hexRadius = side * 0.57735f;
-        float flash = Mathf.clamp(1f - fin / 0.12f);
-        for(int lattice = 0; lattice < 2; lattice++){
-            float off = lattice * 0.5f;
-            for(int i = x0; i <= x1; i++){
-                for(int j = y0; j <= y1; j++){
-                    float cx = (i + off) * dx, cy = (j + off) * dy;
-                    if(!Intersector.isInRegularPolygon(sides, e.x, e.y, radius, turn, cx, cy)) continue;
-                    long seed = (long)i * 73856093L ^ (long)j * 19349663L ^ lattice * 83492791L;
-                    float h = Mathf.randomSeed(seed), dist = Mathf.dst(cx, cy, e.x, e.y) / radius;
-                    // when this cell goes, as a share of the effect's life: after the flash, the middle first
-                    float goes = 0.12f + 0.40f * (0.55f * dist + 0.45f * h);
-                    if(fin < goes){
-                        // still there: in the shield's colour, white in the flash and just before it goes
-                        float blink = Mathf.clamp(1f - (goes - fin) / 0.05f);
-                        cellColor.set(e.color).lerp(Color.white, Math.max(flash, blink) * 0.8f);
-                        Draw.z(Layer.shields);
-                        Draw.color(cellColor);
-                        // a hair larger than the cell: cells side by side make one whole, so the shader draws its
-                        // edge line only round the holes (with a gap between them, a line ran round every cell)
-                        Fill.poly(cx, cy, 6, hexRadius * 1.04f, 90f);
-                    }else{
-                        // shards: from about every third cell, one or two pieces of glass larger than the cell,
-                        // flying outwards from the middle, turning, fading (from every cell, two or three pieces as
-                        // small as the cell looked like dust)
-                        if(Mathf.randomSeed(seed + 11L) > 0.36f) continue;
-                        float t = (fin - goes) / 0.42f;
-                        if(t >= 1f) continue;
-                        float away = Angles.angle(e.x, e.y, cx, cy);
-                        int pieces = h < 0.6f ? 1 : 2;
-                        Draw.z(Layer.effect + 0.5f);
-                        for(int k = 0; k < pieces; k++){
-                            float r1 = Mathf.randomSeed(seed + k * 7L + 1L), r2 = Mathf.randomSeed(seed + k * 7L + 2L);
-                            float dir = away + (r1 - 0.5f) * 60f, speed = 6f + 12f * r2;
-                            float ease = 1f - (1f - t) * (1f - t);
-                            float sx = cx + Mathf.cosDeg(dir) * speed * ease, sy = cy + Mathf.sinDeg(dir) * speed * ease;
-                            float spin = r1 * 360f + t * (r2 - 0.5f) * 400f, size = hexRadius * (1.1f + 0.7f * r2) * (1f - 0.35f * t);
-                            shardColor.set(e.color).lerp(Color.white, 0.35f + 0.3f * r1);
-                            shardColor.a = (1f - t) * 0.85f;
-                            Draw.color(shardColor);
-                            Fill.tri(sx + Angles.trnsx(spin, size), sy + Angles.trnsy(spin, size),
-                                sx + Angles.trnsx(spin + 130f, size * 0.7f), sy + Angles.trnsy(spin + 130f, size * 0.7f),
-                                sx + Angles.trnsx(spin + 235f, size * 0.85f), sy + Angles.trnsy(spin + 235f, size * 0.85f));
-                        }
+        long salt = e.id * 977L;
+        // the same cracks the worn shield showed (mshaders-shield.frag): it breaks along them
+        crackSeed = seedOf(e);
+        float flash = Mathf.clamp(1f - fin / 0.10f);
+        int span = (int)Math.ceil(radius / piece) + 1;
+        for(int i = -span; i < span; i++){
+            for(int j = -span; j < span; j++){
+                float sx = siteX(e.x, i, j, salt), sy = siteY(e.y, i, j, salt);
+                if(Mathf.dst(sx, sy, e.x, e.y) > radius + piece) continue;
+                // the piece: the square around its point, cut by the halfway lines to the points around, then by the
+                // shield's polygon
+                poly.clear();
+                poly.add(sx - piece * 2f, sy - piece * 2f, sx + piece * 2f, sy - piece * 2f);
+                poly.add(sx + piece * 2f, sy + piece * 2f, sx - piece * 2f, sy + piece * 2f);
+                for(int di = -2; di <= 2 && poly.size >= 6; di++){
+                    for(int dj = -2; dj <= 2 && poly.size >= 6; dj++){
+                        if(di == 0 && dj == 0) continue;
+                        float nx = siteX(e.x, i + di, j + dj, salt), ny = siteY(e.y, i + di, j + dj, salt);
+                        float a = nx - sx, b = ny - sy;
+                        clip(a, b, a * (sx + nx) / 2f + b * (sy + ny) / 2f);
                     }
+                }
+                for(int k = 0; k < sides && poly.size >= 6; k++){
+                    float a0 = turn + 360f * k / sides, a1 = turn + 360f * (k + 1) / sides;
+                    float v0x = e.x + Mathf.cosDeg(a0) * radius, v0y = e.y + Mathf.sinDeg(a0) * radius;
+                    float ex = Mathf.cosDeg(a1) * radius - Mathf.cosDeg(a0) * radius, ey = Mathf.sinDeg(a1) * radius - Mathf.sinDeg(a0) * radius;
+                    clip(ey, -ex, ey * v0x - ex * v0y);
+                }
+                int n = poly.size / 2;
+                if(n < 3) continue;
+                float gx = 0f, gy = 0f;
+                for(int k = 0; k < n; k++){
+                    gx += poly.items[k * 2];
+                    gy += poly.items[k * 2 + 1];
+                }
+                gx /= n;
+                gy /= n;
+
+                long seed = salt ^ (long)i * 19349663L ^ (long)j * 73856093L;
+                float h = Mathf.randomSeed(seed), r1 = Mathf.randomSeed(seed + 1L), r2 = Mathf.randomSeed(seed + 2L);
+                float dist = Mathf.dst(gx, gy, e.x, e.y) / radius;
+                // when this piece comes loose: after the flash, the middle first
+                float goes = 0.10f + 0.30f * (0.5f * dist + 0.5f * h);
+                if(fin < goes){
+                    // still in place, a little apart from its neighbours: white in the flash and just before it goes
+                    float blink = Mathf.clamp(1f - (goes - fin) / 0.05f);
+                    cellColor.set(e.color).lerp(Color.white, Math.max(flash, blink) * 0.8f);
+                    Draw.z(Layer.shields);
+                    Draw.color(cellColor);
+                    drawPiece(gx, gy, 0f, 0f, 0f, 1f, 0.7f, n, true);
+                }else{
+                    float t = (fin - goes) / 0.55f;
+                    if(t >= 1f) continue;
+                    float ease = 1f - (1f - t) * (1f - t);
+                    float away = Angles.angle(e.x, e.y, gx, gy) + (r1 - 0.5f) * 40f, far = (8f + 18f * r2) * ease;
+                    float ox = Mathf.cosDeg(away) * far, oy = Mathf.sinDeg(away) * far;
+                    float spin = (r1 - 0.5f) * 140f * ease, scale = 1f - 0.25f * t;
+                    Draw.z(Layer.effect + 0.5f);
+                    // a pane of glass: faintly tinted, with a bright edge
+                    shardColor.set(e.color).lerp(Color.white, 0.4f);
+                    shardColor.a = 0.38f * (1f - t);
+                    Draw.color(shardColor);
+                    drawPiece(gx, gy, ox, oy, spin, scale, 0f, n, true);
+                    edgeColor.set(e.color).lerp(Color.white, 0.7f);
+                    edgeColor.a = 0.9f * (1f - t);
+                    Draw.color(edgeColor);
+                    Lines.stroke(1.1f);
+                    drawPiece(gx, gy, ox, oy, spin, scale, 0f, n, false);
                 }
             }
         }
         Draw.color();
         Draw.z(Layer.effect);
+    }
+
+    /** The piece in "poly" (n corners, middle gx, gy): moved, turned about its middle, scaled, pulled in by "inset" world units; filled or as an outline. */
+    private static void drawPiece(float gx, float gy, float ox, float oy, float spin, float scale, float inset, int n, boolean fill){
+        float cos = Mathf.cosDeg(spin), sin = Mathf.sinDeg(spin);
+        float px = 0f, py = 0f, fx = 0f, fy = 0f;
+        for(int k = 0; k <= n; k++){
+            int q = k % n;
+            float rx = poly.items[q * 2] - gx, ry = poly.items[q * 2 + 1] - gy;
+            float len = (float)Math.sqrt(rx * rx + ry * ry);
+            float shrink = len > 0.001f ? Math.max(len - inset, 0f) / len * scale : scale;
+            rx *= shrink;
+            ry *= shrink;
+            float x = gx + ox + rx * cos - ry * sin, y = gy + oy + rx * sin + ry * cos;
+            if(k > 0){
+                if(fill) Fill.tri(gx + ox, gy + oy, px, py, x, y);
+                else Lines.line(px, py, x, y);
+            }else{
+                fx = x;
+                fy = y;
+            }
+            px = x;
+            py = y;
+        }
     }
 
     /** Is any shield in view? (Force projectors and units with a force field; the shield arcs are not looked for.) */

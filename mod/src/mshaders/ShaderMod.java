@@ -17,7 +17,11 @@ public class ShaderMod extends Mod{
     floorGrass = "mshaders-floor-grass", floorHot = "mshaders-floor-hot", floorMetal = "mshaders-floor-metal", floorRelief = "mshaders-floor-relief",
     reflectOn = "mshaders-reflect", reflectStrength = "mshaders-reflect-strength",
     shadowOn = "mshaders-shadow", shadowLength = "mshaders-shadow-length", shadowStrength = "mshaders-shadow-strength", shadowCycle = "mshaders-shadow-cycle", shadowQuality = "mshaders-shadow-quality", shadowAo = "mshaders-shadow-ao",
-    shieldsOn = "mshaders-shields", shieldsBubble = "mshaders-shields-bubble", shieldsRipple = "mshaders-shields-ripple", shieldsLight = "mshaders-shields-light", shieldsHex = "mshaders-shields-hex", shieldsRefract = "mshaders-shields-refract", shieldsTurns = "mshaders-shields-turns", shieldsSheen = "mshaders-shields-sheen", sunAngle = "mshaders-sun-angle",
+    shieldsOn = "mshaders-shields", shieldsBubble = "mshaders-shields-bubble", shieldsRipple = "mshaders-shields-ripple", shieldsLight = "mshaders-shields-light", shieldsHex = "mshaders-shields-hex", shieldsRefract = "mshaders-shields-refract", shieldsTurns = "mshaders-shields-turns", shieldsSheen = "mshaders-shields-sheen",
+    shieldsCrack = "mshaders-shields-crack",
+    statusesOn = "mshaders-statuses", statusesStrength = "mshaders-statuses-strength",
+    pulsesOn = "mshaders-pulses", pulsesWave = "mshaders-pulses-wave", pulsesHaze = "mshaders-pulses-haze",
+    blastsOn = "mshaders-blasts", blastsShock = "mshaders-blasts-shock", blastsFlash = "mshaders-blasts-flash", blastsScorch = "mshaders-blasts-scorch", blastsScorchTime = "mshaders-blasts-scorch-time", sunAngle = "mshaders-sun-angle",
     lightsOn = "mshaders-lights", lightsStrength = "mshaders-lights-strength", darkDepth = "mshaders-dark-depth", lightsColor = "mshaders-lights-color", lightsMoving = "mshaders-lights-moving", lightsMax = "mshaders-lights-max", lightsDetail = "mshaders-lights-detail", lightsAir = "mshaders-lights-air", lightsShots = "mshaders-lights-shots", shotShadows = "mshaders-shot-shadows", lightsGround = "mshaders-lights-ground", lightsUnits = "mshaders-lights-units", lightsUnitsDepth = "mshaders-lights-units-depth",
     // found, not listed: the slider appears once a thorium reactor has blown up in view (LightTap.reactorBoost)
     reactorFun = "mshaders-reactor-fun", reactorFound = "mshaders-reactor-found",
@@ -71,7 +75,10 @@ public class ShaderMod extends Mod{
             lightsOn, true, lightsStrength, 100, darkDepth, 50, lightsColor, 100, lightsMoving, 100, lightsMax, 64, lightsDetail, 100, lightsAir, 100, lightsShots, 100, shotShadows, true, lightsGround, 100, lightsUnits, true, lightsUnitsDepth, 65,
             glintOn, true, glintStrength, 100, glintBand, 100,
             normalsOn, true, normalsStrength, 100, normalsMetal, 100, normalsHeight, true, normalsOwnLight, false, boostersOn, true, boostersTint, true, boostersBreath, 100, boostersFlicker, 100, devWatch, false, devButton, false, devGlossTable, false, devClock, false, devSquares, true,
-            shieldsOn, true, shieldsBubble, 100, shieldsRipple, 100, shieldsLight, 100, shieldsHex, 100, shieldsRefract, 100, shieldsTurns, true, shieldsSheen, 100,
+            shieldsOn, true, shieldsBubble, 100, shieldsRipple, 100, shieldsLight, 100, shieldsHex, 100, shieldsRefract, 100, shieldsTurns, true, shieldsSheen, 100, shieldsCrack, 100,
+            pulsesOn, true, pulsesWave, 100, pulsesHaze, 100,
+            statusesOn, true, statusesStrength, 100,
+            blastsOn, true, blastsShock, 100, blastsFlash, 100, blastsScorch, 100, blastsScorchTime, 5,
             postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15, spare, 100
         );
 
@@ -97,6 +104,13 @@ public class ShaderMod extends Mod{
         ice.init(scene);
         floors.init();
         Shields.init(scene);
+        Pulses.init();
+        Statuses.init();
+        try{
+            Log.info("[mshaders] explosion effects with a shock wave: @", Blasts.install());
+        }catch(Throwable t){
+            Log.err("[mshaders] explosions stay as the game draws them", t);
+        }
 
         // The settings are folded under the headline of their section (Folds.java): the switch of each effect, then its sliders.
         Vars.ui.settings.addCategory(Core.bundle.get("mshaders.category", "Shaders"), Icon.effect, t -> {
@@ -164,6 +178,8 @@ public class ShaderMod extends Mod{
                 engineDialog.show();
             });
             f.check(normalsOwnLight, false);
+            f.check(statusesOn, true);
+            f.slider(statusesStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
 
             f.section("shields");
             f.check(shieldsOn, true);
@@ -174,6 +190,19 @@ public class ShaderMod extends Mod{
             f.slider(shieldsRefract, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.check(shieldsTurns, true);
             f.slider(shieldsSheen, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(shieldsCrack, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+
+            f.section("pulses");
+            f.check(pulsesOn, true);
+            f.slider(pulsesWave, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(pulsesHaze, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+
+            f.section("blasts");
+            f.check(blastsOn, true);
+            f.slider(blastsShock, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(blastsFlash, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(blastsScorch, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(blastsScorchTime, 5, 1, 60, 1, i -> Core.bundle.format("mshaders.seconds", i));
 
             f.section("post");
             f.check(postOn, true);
