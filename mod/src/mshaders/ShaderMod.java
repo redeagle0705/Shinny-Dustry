@@ -16,12 +16,13 @@ public class ShaderMod extends Mod{
     floorsOn = "mshaders-floors", floorRock = "mshaders-floor-rock", floorSand = "mshaders-floor-sand", floorSnow = "mshaders-floor-snow",
     floorGrass = "mshaders-floor-grass", floorHot = "mshaders-floor-hot", floorMetal = "mshaders-floor-metal", floorRelief = "mshaders-floor-relief",
     reflectOn = "mshaders-reflect", reflectStrength = "mshaders-reflect-strength",
-    shadowOn = "mshaders-shadow", shadowLength = "mshaders-shadow-length", shadowStrength = "mshaders-shadow-strength", shadowCycle = "mshaders-shadow-cycle", shadowQuality = "mshaders-shadow-quality", sunAngle = "mshaders-sun-angle",
+    shadowOn = "mshaders-shadow", shadowLength = "mshaders-shadow-length", shadowStrength = "mshaders-shadow-strength", shadowCycle = "mshaders-shadow-cycle", shadowQuality = "mshaders-shadow-quality", shadowAo = "mshaders-shadow-ao",
+    shieldsOn = "mshaders-shields", shieldsBubble = "mshaders-shields-bubble", shieldsRipple = "mshaders-shields-ripple", shieldsLight = "mshaders-shields-light", shieldsHex = "mshaders-shields-hex", shieldsRefract = "mshaders-shields-refract", shieldsTurns = "mshaders-shields-turns", shieldsSheen = "mshaders-shields-sheen", sunAngle = "mshaders-sun-angle",
     lightsOn = "mshaders-lights", lightsStrength = "mshaders-lights-strength", darkDepth = "mshaders-dark-depth", lightsColor = "mshaders-lights-color", lightsMoving = "mshaders-lights-moving", lightsMax = "mshaders-lights-max", lightsDetail = "mshaders-lights-detail", lightsAir = "mshaders-lights-air", lightsShots = "mshaders-lights-shots", shotShadows = "mshaders-shot-shadows", lightsGround = "mshaders-lights-ground", lightsUnits = "mshaders-lights-units", lightsUnitsDepth = "mshaders-lights-units-depth",
     // found, not listed: the slider appears once a thorium reactor has blown up in view (LightTap.reactorBoost)
     reactorFun = "mshaders-reactor-fun", reactorFound = "mshaders-reactor-found",
     glintOn = "mshaders-glint", glintStrength = "mshaders-glint-strength", glintBand = "mshaders-glint-band",
-    normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsMetal = "mshaders-normals-metal", normalsHeight = "mshaders-normals-height", normalsOwnLight = "mshaders-normals-own-light", boostersOn = "mshaders-boosters", boostersTint = "mshaders-boosters-tint", boostersBreath = "mshaders-boosters-breath", devWatch = "mshaders-dev-watch", devButton = "mshaders-dev-button", devGlossTable = "mshaders-dev-gloss-table", devClock = "mshaders-dev-clock", devSquares = "mshaders-light-squares",
+    normalsOn = "mshaders-normals", normalsStrength = "mshaders-normals-strength", normalsMetal = "mshaders-normals-metal", normalsHeight = "mshaders-normals-height", normalsOwnLight = "mshaders-normals-own-light", boostersOn = "mshaders-boosters", boostersTint = "mshaders-boosters-tint", boostersBreath = "mshaders-boosters-breath", boostersFlicker = "mshaders-boosters-flicker", devWatch = "mshaders-dev-watch", devButton = "mshaders-dev-button", devGlossTable = "mshaders-dev-gloss-table", devClock = "mshaders-dev-clock", devSquares = "mshaders-light-squares",
     postOn = "mshaders-post", vignette = "mshaders-vignette", saturation = "mshaders-saturation", contrast = "mshaders-contrast", warmth = "mshaders-warmth", spare = "mshaders-spare";
 
     /**
@@ -66,10 +67,11 @@ public class ShaderMod extends Mod{
             iceOn, true, iceStrength, 100,
             floorsOn, true, floorRock, 100, floorSand, 100, floorSnow, 100, floorGrass, 100, floorHot, 100, floorMetal, 100, floorRelief, 100,
             reflectOn, true, reflectStrength, 100,
-            shadowOn, true, shadowLength, 15, shadowStrength, 70, shadowCycle, 4, shadowQuality, 80, sunAngle, 45,
+            shadowOn, true, shadowLength, 15, shadowStrength, 70, shadowCycle, 4, shadowQuality, 80, shadowAo, 100, sunAngle, 45,
             lightsOn, true, lightsStrength, 100, darkDepth, 50, lightsColor, 100, lightsMoving, 100, lightsMax, 64, lightsDetail, 100, lightsAir, 100, lightsShots, 100, shotShadows, true, lightsGround, 100, lightsUnits, true, lightsUnitsDepth, 65,
             glintOn, true, glintStrength, 100, glintBand, 100,
-            normalsOn, true, normalsStrength, 100, normalsMetal, 100, normalsHeight, true, normalsOwnLight, false, boostersOn, true, boostersTint, true, boostersBreath, 100, devWatch, false, devButton, false, devGlossTable, false, devClock, false, devSquares, true,
+            normalsOn, true, normalsStrength, 100, normalsMetal, 100, normalsHeight, true, normalsOwnLight, false, boostersOn, true, boostersTint, true, boostersBreath, 100, boostersFlicker, 100, devWatch, false, devButton, false, devGlossTable, false, devClock, false, devSquares, true,
+            shieldsOn, true, shieldsBubble, 100, shieldsRipple, 100, shieldsLight, 100, shieldsHex, 100, shieldsRefract, 100, shieldsTurns, true, shieldsSheen, 100,
             postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15, spare, 100
         );
 
@@ -94,6 +96,7 @@ public class ShaderMod extends Mod{
         shadow.init(scene);
         ice.init(scene);
         floors.init();
+        Shields.init(scene);
 
         // The settings are folded under the headline of their section (Folds.java): the switch of each effect, then its sliders.
         Vars.ui.settings.addCategory(Core.bundle.get("mshaders.category", "Shaders"), Icon.effect, t -> {
@@ -121,6 +124,7 @@ public class ShaderMod extends Mod{
             f.slider(shadowLength, 15, 0, 40, 1, i -> Strings.autoFixed(i / 10f, 1));
             f.slider(shadowStrength, 70, 0, 100, 5, i -> i + "%");
             f.slider(shadowQuality, 80, 0, 100, 5, i -> i + "%");
+            f.slider(shadowAo, 100, 0, 150, 5, i -> i + "%");
             f.slider(sunAngle, 45, 0, 355, 5, i -> i + "°");
             f.slider(shadowCycle, 4, 0, 30, 1, i -> i == 0 ? off : Core.bundle.format("mshaders.minutes", i));
 
@@ -154,11 +158,22 @@ public class ShaderMod extends Mod{
             f.check(boostersOn, true);
             f.check(boostersTint, true);
             f.slider(boostersBreath, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(boostersFlicker, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.button("mshaders-engines-edit", () -> {
                 if(engineDialog == null) engineDialog = new EngineDialog();
                 engineDialog.show();
             });
             f.check(normalsOwnLight, false);
+
+            f.section("shields");
+            f.check(shieldsOn, true);
+            f.slider(shieldsBubble, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(shieldsRipple, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(shieldsLight, 100, 0, 300, 25, i -> i == 0 ? off : i + "%");
+            f.slider(shieldsHex, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(shieldsRefract, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.check(shieldsTurns, true);
+            f.slider(shieldsSheen, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
 
             f.section("post");
             f.check(postOn, true);

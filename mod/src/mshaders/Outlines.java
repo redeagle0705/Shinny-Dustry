@@ -375,9 +375,23 @@ public class Outlines{
         int[] at = new int[made.size];
         int x = gap;
         for(int i = 0; i < made.size; i++){
-            all.draw(made.get(i), x, gap);
+            Pixmap map = made.get(i);
+            all.draw(map, x, gap);
+            // The outermost pixels once more, just outside the sprite - as the game's own packing has them. Read between
+            // pixels, the edge of a sprite otherwise fades into the empty gap: a wall that fills its tile (the watched
+            // folder's walls) got an edge half see-through, and what lies under it showed as a thin dark line between
+            // every two walls set side by side.
+            for(int px = 0; px < map.width; px++){
+                all.set(x + px, gap - 1, map.get(px, 0));
+                all.set(x + px, gap + map.height, map.get(px, map.height - 1));
+            }
+            for(int py = -1; py <= map.height; py++){
+                int row = Math.min(Math.max(py, 0), map.height - 1);
+                all.set(x - 1, gap + py, map.get(0, row));
+                all.set(x + map.width, gap + py, map.get(map.width - 1, row));
+            }
             at[i] = x;
-            x += made.get(i).width + gap;
+            x += map.width + gap;
         }
         Texture texture = new Texture(all);
         all.dispose();

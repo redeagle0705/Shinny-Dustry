@@ -16,6 +16,7 @@ uniform float u_light;         // light strength, 0 = off
 uniform float u_glint;         // glint strength, 0 = off
 uniform float u_aimed;         // 1 when u_aim holds this frame's light directions
 uniform float u_band;          // strength of the drifting sun band, 0 = no band
+uniform float u_bandWave;      // 1 = the band winds and comes at random, 0 = straight, one after another
 
 uniform sampler2D u_surface;   // the normals drawn for this frame (Surfaces.draw); alpha = 1 where a normal-mapped building is
 uniform float u_shape;         // 1 when u_surface is bound
@@ -50,6 +51,23 @@ float luma(vec3 c){
 
 float lumaAt(vec2 uv){
     return luma(texture2D(u_texture, uv).rgb);
+}
+
+
+// The bright band of sunlight that drifts across the map ("dir": the way it travels). Once a straight band every 170
+// world units, one after another at one pace; now its front winds, and the winding drifts along it, and of those
+// places a band could come by only about half bring one, each a little brighter or fainter and wider or narrower - at
+// no steady beat. ("Not straight, wavy, at random intervals", a player asked; u_bandWave 0 gives the old band back.)
+float sunBand(vec2 world, vec2 dir, float t){
+    float along = dot(world, dir);
+    if(u_bandWave < 0.5) return pow(0.5 + 0.5 * sin((along / 170.0 - t * 0.22) * 6.2832), 28.0);
+    float across = dot(world, vec2(-dir.y, dir.x));
+    along += sin(across / 45.0 + t * 0.35) * 14.0 + sin(across / 110.0 - t * 0.12) * 24.0;
+    float p = along / 170.0 - t * 0.22;
+    float n = floor(p);     // which band (its brightest is at a quarter of the way through)
+    float h1 = fract(sin(n * 12.9898 + 4.1) * 43758.5453), h2 = fract(sin(n * 78.233 + 1.7) * 24634.6345);
+    if(h1 > 0.5) return 0.0;
+    return (0.6 + 0.4 * h2) * pow(0.5 + 0.5 * sin(p * 6.2832), 20.0 + 20.0 * h2);
 }
 
 void main(){
@@ -94,7 +112,7 @@ void main(){
             float away = smoothstep(0.20, 0.45, -lean);   // dark-tone face: turned to the lower left
 
             // sunlight from the upper right: a faint sheen on the lit faces, and a bright band that drifts across the map
-            float band = pow(0.5 + 0.5 * sin((dot(world, baked) / 170.0 - u_time * 0.22) * 6.2832), 28.0);
+            float band = sunBand(world, baked, u_time);
             float shine = lit * (0.05 + 0.30 * band * u_band);
 
             // moving lights: faces turned towards the light catch it (lit faces for a light to the upper right,

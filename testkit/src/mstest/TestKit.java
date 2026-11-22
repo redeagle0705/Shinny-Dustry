@@ -55,6 +55,9 @@ import java.lang.reflect.*;
  *   enemy=name     a unit of the other team held to the right of that row, so the row shoots at it (nothing held dies); enemyright=N: that far right of the lamp (before enemy=; 0 = under the middle of the row)
  *   heldshot=F     a shot of the first unit of that row held at the first test lamp, with the share F of its time used up (0 = just fired .. 1)
  *   face=N         hold the units of that row turned to N degrees (0 = right, 90 = up)      facestep=M  each one M degrees further than the one before
+ *   ring=DX:DY:AGE a shot stopped that far from the projector, AGE ticks before the held time (time=)
+ *   shields=true   a force projector and a quasar with its force field (no power needed)      pelt=N  shots at them every N ticks
+ *   swerve=N:K     the units of that row turn by N degrees at 8 a tick, and K ticks after the turn began the clock stops
  *   spin=N         turn the units of that row by N degrees a tick (from face=)      fly=F:S  give them a speed: F of their top speed
  *                  forwards and S of it to their left (they stay where they are held; only what goes by the speed shows it)
  *   unitcolors=true  report for every unit of the game the colour its sprite is marked with besides grey and the orange of
@@ -81,6 +84,8 @@ import java.lang.reflect.*;
  *   gl=true        report what a frame of the shot asks of the graphics card: draw calls, texture bindings, shader switches
  *                  (counting slows the game down: not together with fps=true)
  *   fieldof=a+b    fill the view with those blocks, taking turns (a busy base seen from far away)
+ *   wallshapes=a+b for each of those walls, above the test buildings: one alone, a row of four, a column of three, an L, a
+ *                  square of four and a T, each kind in a band of its own; the camera moves to the first band
  *   sprites=a+b    save atlas sprites enlarged and report where their light and dark pixels are
  *   turretlist=true  report every turret-like block with the sprites it is put together from (base, body, parts; effects apart)
  *   weaponlist=true  report every unit with its weapons: the colours of each shot and the colour of its light (run without the shader mod)
@@ -117,6 +122,20 @@ public class TestKit extends Mod{
     float landing = Float.NaN;
     /** spin=N: degrees a tick the units of the row are turned by; fly=F:S: the speed they are given, forwards and to the left, as shares of their top speed. */
     float spin = Float.NaN, flyForward = Float.NaN, flySide;
+    /**
+     * swerve=N:K: the units of the row fly straight (face=), then turn by N degrees at 8 degrees a tick; K ticks after
+     * the turn began the game's clock is stopped and they are held as they are - a short sharp turn, looked at at one
+     * moment. swerveFrom: when the turn begins (Time.time).
+     */
+    float swerve = Float.NaN, swerveStop, swerveFrom;
+    /**
+     * shields=true: a force projector (its team set to need no power) and a quasar with its force field beside it, the
+     * camera between them. pelt=N: every N ticks a shot of another team flies at each of them from the right (0 = none).
+     */
+    float shieldX = Float.NaN, shieldY, pelt, lastPelt;
+    boolean shieldHold = true;
+    mindustry.gen.Unit shieldUnit;
+    boolean swerveArmed;
     /** stride=N: where in their walk the two-legged units of the row are held (NaN = left alone). */
     float stride = Float.NaN;
     /** How far below the lamp the row is, world units (crowdbelow=N, before crowd=). */
@@ -211,6 +230,22 @@ public class TestKit extends Mod{
                         if(!Float.isNaN(spin)){
                             crowd.get(c).rotation = (Float.isNaN(face) ? 90f : face) + c * faceStep + Time.time * spin;
                         }
+                        if(!Float.isNaN(swerve)){
+                            // (Counted from here, not from where the key is read: the clock held for the shot before
+                            // is held only while the game draws, and once let go it is as far on as if it had never
+                            // been held - the turn would be over within a frame.)
+                            if(swerveArmed){
+                                swerveArmed = false;
+                                swerveFrom = Time.time + 30f;
+                                line("  swerve: now " + Time.time + ", the turn begins at " + swerveFrom);
+                            }
+                            float since = Mathf.clamp(Time.time - swerveFrom, 0f, swerveStop);
+                            crowd.get(c).rotation = (Float.isNaN(face) ? 90f : face) + c * faceStep + Math.signum(swerve) * Math.min(since * 8f, Math.abs(swerve));
+                            if(holdTime < 0f && Time.time - swerveFrom >= swerveStop){
+                                holdTime = Time.time;
+                                line("  swerve: clock stopped at " + Time.time + ", unit turned to " + crowd.get(c).rotation);
+                            }
+                        }
                         if(!Float.isNaN(flyForward)){
                             var held = crowd.get(c);
                             held.vel.trns(held.rotation, flyForward * held.type.speed, flySide * held.type.speed);
@@ -218,6 +253,7 @@ public class TestKit extends Mod{
                         if(!Float.isNaN(stride) && crowd.get(c) instanceof mindustry.gen.Mechc mech) mech.walkTime(stride * crowd.get(c).type.mechStride);
                     }
                 }
+                if(!Float.isNaN(shieldX)) holdShields();
                 if(pinAt != null && lastUnit != null && lastUnit.isValid()){
                     lastUnit.set(pinAt[0], pinAt[1]);
                     lastUnit.vel.setZero();
@@ -441,6 +477,7 @@ public class TestKit extends Mod{
                 }
                 case "field" -> placeField();
                 case "fieldof" -> placeFieldOf(v);
+                case "wallshapes" -> placeWallShapes(v);
                 case "fill" -> fillBelts();
                 case "joincam" -> {
                     camX = (joinX + 6 * Integer.parseInt(v) + 0.5f) * Vars.tilesize;
@@ -455,6 +492,7 @@ public class TestKit extends Mod{
                     else line("  no door to open");
                 }
                 case "paint" -> paintFloors(v);
+                case "ore" -> paintOre(v);
                 case "unit" -> {
                     var type = Vars.content.unit(v);
                     if(unitPos != null && type != null) lastUnit = type.spawn(Vars.player.team(), unitPos[0], unitPos[1]);
@@ -560,6 +598,39 @@ public class TestKit extends Mod{
                     }
                 }
                 case "spin" -> spin = Float.parseFloat(v);
+                case "shields" -> placeShields();
+                case "pelt" -> pelt = Float.parseFloat(v);
+                case "shieldbreak" -> {
+                    // breaks both shields now (and stops holding them up); shieldback=true lets them come back
+                    shieldHold = false;
+                    var b = Vars.world.buildWorld(shieldX, shieldY);
+                    if(b instanceof mindustry.world.blocks.defense.ForceProjector.ForceBuild force) force.buildup = 1e6f;
+                    if(shieldUnit != null && shieldUnit.isValid()) shieldUnit.shield = 0f;
+                }
+                case "shieldback" -> {
+                    shieldHold = true;
+                    var b = Vars.world.buildWorld(shieldX, shieldY);
+                    if(b instanceof mindustry.world.blocks.defense.ForceProjector.ForceBuild force) force.buildup = 0f;
+                }
+                case "ring" -> {
+                    // ring=DX:DY:AGE (after shields= and time=): a shot stopped that far from the projector, AGE ticks ago
+                    String[] p = v.split(":");
+                    float now = holdTime >= 0f ? holdTime : Time.time;
+                    try{
+                        Vars.mods.mainLoader().loadClass("mshaders.Shields").getMethod("testHit", float.class, float.class, float.class)
+                            .invoke(null, shieldX + Float.parseFloat(p[0]), shieldY + Float.parseFloat(p[1]), now - Float.parseFloat(p[2]));
+                    }catch(Throwable t){
+                        line("  no ring: " + t);
+                    }
+                }
+                case "swerve" -> {
+                    swerve = Float.parseFloat(v.split(":")[0]);
+                    swerveStop = v.contains(":") ? Float.parseFloat(v.split(":")[1]) : 6f;
+                    // the clock runs again; the turn begins half a second from now
+                    holdTime = -1f;
+                    swerveFrom = Float.MAX_VALUE;
+                    swerveArmed = true;
+                }
                 case "fly" -> {
                     flyForward = Float.parseFloat(v.split(":")[0]);
                     flySide = v.contains(":") ? Float.parseFloat(v.split(":")[1]) : 0f;
@@ -875,6 +946,80 @@ public class TestKit extends Mod{
         line("  painted the view in strips: " + names);
     }
 
+    void placeShields(){
+        if(baseW == 0) return;
+        var team = Vars.player.team();
+        Vars.state.rules.teams.get(team).cheat = true;
+        int x = baseX + 4, y = baseY + 10;
+        for(int dx = -12; dx < 14; dx++){
+            for(int dy = -10; dy < 10; dy++){
+                var t = Vars.world.tile(x + dx, y + dy);
+                if(t != null && t.build == null && t.block() != Blocks.air) t.setAir();
+            }
+        }
+        var t = Vars.world.tile(x, y);
+        if(t != null) t.setBlock(Blocks.forceProjector, team, 0);
+        shieldX = x * Vars.tilesize;
+        shieldY = y * Vars.tilesize;
+        shieldUnit = mindustry.content.UnitTypes.quasar.spawn(team, shieldX + 150f, shieldY);
+        camX = shieldX + 75f;
+        camY = shieldY;
+        camSet = true;
+        line("  force projector at tile " + x + "," + y + " and a quasar beside it");
+    }
+
+    void holdShields(){
+        if(!shieldHold){
+            if(shieldUnit != null && shieldUnit.isValid()){
+                shieldUnit.set(shieldX + 150f, shieldY);
+                shieldUnit.vel.setZero();
+                shieldUnit.health = shieldUnit.maxHealth;
+            }
+            return;
+        }
+        if(shieldUnit != null && shieldUnit.isValid()){
+            shieldUnit.set(shieldX + 150f, shieldY);
+            shieldUnit.vel.setZero();
+            shieldUnit.rotation = 90f;
+            shieldUnit.shield = Math.max(shieldUnit.shield, 400f);
+            shieldUnit.health = shieldUnit.maxHealth;
+        }
+        var b = Vars.world.buildWorld(shieldX, shieldY);
+        if(b != null) b.health = b.maxHealth;
+        if(b instanceof mindustry.world.blocks.defense.ForceProjector.ForceBuild force) force.buildup = 0f;
+        if(pelt > 0f && Time.time - lastPelt >= pelt){
+            lastPelt = Time.time;
+            var shot = mindustry.content.UnitTypes.dagger.weapons.first().bullet;
+            float sy = shieldY + Mathf.range(40f);
+            shot.create(null, mindustry.game.Team.crux, shieldX + 260f, sy, Angles.angle(shieldX + 260f, sy, shieldX, shieldY));
+            if(shieldUnit != null && shieldUnit.isValid()){
+                float uy = shieldY + Mathf.range(20f);
+                shot.create(null, mindustry.game.Team.crux, shieldX + 260f, uy + 60f, Angles.angle(shieldX + 260f, uy + 60f, shieldX + 150f, shieldY));
+            }
+        }
+    }
+
+    /**
+     * ore=NAME (after paint=): that ore in a band six tiles high across the middle of the view, over every strip - the
+     * same ore on several floors, side by side.
+     */
+    void paintOre(String name){
+        var ore = Vars.content.block(name);
+        if(ore == null || !ore.isOverlay()){
+            line("  not an ore: " + name);
+            return;
+        }
+        int mid = viewY + viewH / 2;
+        for(int x = viewX - 12; x < viewX + viewW + 12; x++){
+            for(int y = mid - 3; y < mid + 3; y++){
+                var t = Vars.world.tile(x, y);
+                if(t != null) t.setOverlay(ore);
+            }
+        }
+        Vars.renderer.blocks.floor.reload();
+        line("  ore " + name + " across the middle of the view");
+    }
+
     /**
      * Six silicon smelters side by side, touching, a few tiles north of the test buildings (after blocks=true): a wall
      * of blocks. No light and no shadow may get through between two blocks that touch.
@@ -988,6 +1133,69 @@ public class TestKit extends Mod{
             }
         }
         line("  placed four conveyor joins at tile " + joinX + "," + joinY + " (shapes:" + shapes + ", tiles not free: " + missing + ")");
+    }
+
+    /** wallshapes=a+b: walls of one kind touching each other in a few shapes, a band for each kind. */
+    void placeWallShapes(String names){
+        if(baseW == 0) return;
+        var team = Vars.player.team();
+        // the shapes, in steps of one wall: where each wall of a shape stands
+        int[][][] shapes = {
+            {{0, 0}},
+            {{0, 0}, {1, 0}, {2, 0}, {3, 0}},
+            {{0, 0}, {0, 1}, {0, 2}},
+            {{0, 0}, {1, 0}, {2, 0}, {0, 1}, {0, 2}},
+            {{0, 0}, {1, 0}, {0, 1}, {1, 1}},
+            {{0, 2}, {1, 2}, {2, 2}, {1, 1}, {1, 0}},
+        };
+        int band = baseY + 10, placed = 0;
+        boolean first = true;
+        for(String name : names.split("[+]")){
+            mindustry.world.Block block = Vars.content.block(name);
+            if(block == null){
+                line("  no block named " + name);
+                continue;
+            }
+            int s = block.size, x = baseX - 4;
+            // room
+            for(int cx = x - 2; cx < x + 30 * s; cx++){
+                for(int cy = band - 2; cy < band + 3 * s + 2; cy++){
+                    var t = Vars.world.tile(cx, cy);
+                    if(t != null && t.build == null && t.block() != Blocks.air && !t.block().isStatic()) t.setAir();
+                }
+            }
+            if(s > 1){
+                // first of all: a large wall under the seam of two others, half a wall along - these must not join
+                int[][] off = {{x, band + s}, {x + s, band + s}, {x + s / 2, band}};
+                for(int[] at : off){
+                    var t = Vars.world.tile(at[0], at[1]);
+                    if(t != null && t.build == null && !t.block().isStatic() && !t.floor().isLiquid){
+                        t.setBlock(block, team, 0);
+                        placed++;
+                    }
+                }
+                x += 3 * s;
+            }
+            for(int[][] shape : shapes){
+                int wide = 0;
+                for(int[] at : shape){
+                    var t = Vars.world.tile(x + at[0] * s, band + at[1] * s);
+                    if(t != null && t.build == null && !t.block().isStatic() && !t.floor().isLiquid){
+                        t.setBlock(block, team, 0);
+                        placed++;
+                    }
+                    wide = Math.max(wide, at[0] + 1);
+                }
+                x += (wide + 1) * s + (s > 1 ? 0 : 1);
+            }
+            if(first){
+                camX = (baseX - 4 + (x - (baseX - 4)) / 2f) * Vars.tilesize;
+                camY = (band + 1.5f * s) * Vars.tilesize;
+                first = false;
+            }
+            band += 3 * s + 3;
+        }
+        line("  placed " + placed + " walls in shapes (" + names + ")");
     }
 
     /** fieldof=a+b: those blocks over the whole view, taking turns, each on the next free square of its size. */

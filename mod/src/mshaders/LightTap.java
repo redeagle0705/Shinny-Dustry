@@ -483,6 +483,16 @@ public class LightTap extends LightRenderer{
         if(gameLighting() && !takeover) super.add(x, y, radius, color, opacity);
     }
 
+    /**
+     * A light that hangs that high above the ground (world units), whoever reports it: the glow of a shield's dome
+     * (Shields). On the ground in its middle, the blocks under the dome threw long shadows out from its centre.
+     */
+    public void addAt(float x, float y, float radius, Color color, float opacity, float height){
+        color = ownColor(color);
+        record(x, y, radius, color, opacity, height);
+        if(gameLighting() && !takeover) super.add(x, y, radius, color, opacity);
+    }
+
     @Override
     public void add(float x, float y, TextureRegion region, float rotation, Color color, float opacity){
         // sprite-shaped light. Without the lighting rule it is recorded as a circle about as large as the sprite

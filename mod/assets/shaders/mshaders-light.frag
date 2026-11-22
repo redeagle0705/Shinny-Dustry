@@ -16,7 +16,13 @@ uniform sampler2D u_texture;
 uniform float u_masked;     // 1 when u_texture really is the mask; 0 = no mask this frame, nothing is blocked
 uniform float u_own;        // 1: u_texture is the mod's own picture of solid blocks (white = block); 0: the game's shadow mask
 
-uniform vec2 u_campos;      // world position of the lower-left screen corner
+// World position of the lower-left corner of this picture: that of the screen, moved back to a whole number of this
+// picture's pixels (Scene.snapped), so each of its pixels stays on the same spot of the ground while the view moves.
+// (Tied to the screen, the pixels slid over the ground with the view and jumped back every four screen pixels: the
+// edges of the shade crept along with the camera and then snapped - most of all the dark rim on the far side of a wall.)
+uniform vec2 u_campos;
+uniform vec2 u_view;        // world position of the lower-left corner of the screen itself (the picture of the units is of the screen)
+uniform vec2 u_grain;       // size of one pixel of this picture in world units
 uniform vec2 u_resolution;  // camera size in world units
 uniform vec2 u_world;       // map size in world units
 
@@ -26,6 +32,8 @@ uniform vec2 u_world;       // map size in world units
 // 3: how near the light is, 1 = inside a light, falling to 0 at WIDE times its radius (for deepening the dark far from light)
 uniform int u_mode;
 uniform int u_count;
+// How far behind a point on a block the light is looked up instead, in world units (see main); 0 = not at all.
+uniform float u_back;
 // x, y, radius, opacity. Opacity below zero: the same light, and no unit can be in its way from anywhere in the part of
 // the picture being drawn (Scene.blitByLights) - the steps that look for units are left out for it.
 uniform vec4 u_lights[MAX_LIGHTS];
@@ -231,7 +239,7 @@ float unitsOpen(vec2 from, vec2 to, float len, float low, float high, float air,
         float k = float(i) + jitter;
         if(k >= steps) break;
         float t = last * k / steps;
-        vec2 uv = (from + (to - from) * t - u_campos) / u_resolution;
+        vec2 uv = (from + (to - from) * t - u_view) / u_resolution;
         if(uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) continue;
         vec4 m = texture2D(u_unitMask, uv);
         if(m.b > 0.02){
@@ -266,10 +274,20 @@ void main(){
     // units in the way of light: where this point is on top of one, the ray starts from its top
     float standing = 0.0, jitter = 0.0;
     if(u_unitsOn > 0.5){
-        vec4 here = texture2D(u_unitMask, v_texCoords);
+        vec4 here = texture2D(u_unitMask, (world - u_view) / u_resolution);
         if(here.b > 0.2) standing = (here.g / here.b * CEILING + 2.0 * UNIT_SOFT) * smoothstep(0.2, 0.6, here.b);
-        jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        // by the place on the ground, not on the screen: the grain then stays where it is while the view moves
+        jitter = fract(sin(dot(mod(floor(world / max(u_grain, vec2(0.001)) + 0.5), 4096.0), vec2(12.9898, 78.233))) * 43758.5453);
     }
+
+    // Is this point on a block that stops light? The top of such a block is lit by a lamp beside it (reach: "the block
+    // this point is on"), the ground right behind it is not. This picture is small and is smoothed and stretched over
+    // the screen, so along the far edge of the block the light of its top ran over onto that ground: a thin lit line
+    // between a wall and its own shadow, as if the light came through the wall. So for a point on a block, each light
+    // is looked up a little further from that light - and if that place is open ground, the point takes what the
+    // ground there gets (the shade of this very block). The lit top ends a few screen pixels before the far edge
+    // instead of a few pixels after it.
+    float onBlock = u_masked > 0.5 && u_back > 0.0 ? blockOn(floor((world + 4.0) / 8.0)) : 0.0;
 
     for(int i = 0; i < MAX_LIGHTS; i++){
         if(i >= u_count) break;
@@ -293,7 +311,13 @@ void main(){
 
         // below zero: the light sits on a unit of that radius (Scene.pickLights) - nothing to do with blocks
         float code = u_colors[i].a;
-        float open = reach(world, l.xy, code >= 1000.0 ? 1000.0 + high : max(code, 0.0));
+        vec2 from = world;
+        // (not for a light in the air: that one shines down on the tops of blocks whatever stands around them)
+        if(onBlock > 0.5 && high <= 0.0 && along > u_back){
+            vec2 behind = world - d / along * u_back;
+            if(blockOn(floor((behind + 4.0) / 8.0)) < 0.5) from = behind;
+        }
+        float open = reach(from, l.xy, code >= 1000.0 ? 1000.0 + high : max(code, 0.0));
         // the unit the light sits on or hangs under is not in the way of its own light: its radius
         float own = code >= 1000.0 ? floor((code - 1000.0) / 100.0) : (code < 0.0 ? -code : 0.0);
         // A light that does not hang in the air is taken to sit low, UNIT_LAMP up: a unit on the ground then shades all

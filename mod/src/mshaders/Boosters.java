@@ -73,6 +73,39 @@ public class Boosters{
      * it, 0 = not at all, 2 = twice as much (the setting, a slider: first a switch, then the maker: "or a slider?").
      */
     private static float breathing = 1f;
+    /**
+     * How much the far end of a flame flickers, as fire does: 1 = as set here, 0 = the smooth streak it was. (The maker,
+     * looking at a streak: "the further back, the more it should flare up like real fire".) The setting; and "flare",
+     * what of it the streak being drawn right now gets - more the harder its engine pushes, none for the light a
+     * streak throws on a dark map.
+     */
+    private static float flicker = 1f, flare;
+    /**
+     * How fast the streak being drawn flickers: 1 for a small engine, slower the larger it is - a large fire moves
+     * slowly. (At one speed for all, the flame of a small unit looked right and that of a large one fidgety: the same
+     * waves, but each swing many times as far.)
+     */
+    private static float tempo = 1f;
+
+    /** The tempo of the flicker for an engine of that radius: 1 up to a radius of 3, then falling, never below a third. */
+    private static float tempoOf(float rad){
+        return Mathf.clamp((float)Math.pow(3f / Math.max(rad, 0.1f), 0.8), 0.33f, 1f);
+    }
+    /**
+     * True while the light of a streak is drawn (dark maps): that shape fades in over its first stretch instead of
+     * starting at its full width. (It began as a straight edge across the nozzle, as wide as the light is - on the
+     * ground beside a unit the lit part ended in a line, "as if it were divided along a line through where the light
+     * starts", the maker said.)
+     */
+    private static boolean fadingIn;
+    /**
+     * The same for the glow along a streak, as a distance: over this far from the nozzle the streak being drawn rises
+     * from nothing to its full light; 0 = it starts at full. That glow is the widest thing of a flame - wider than the
+     * round halo at the nozzle - and it started as a straight edge across the nozzle: behind a large unit that hovers
+     * (a short, wide flame) a line on the ground several tiles long, through where the flame starts. ("The line is
+     * still there", the maker said, after the light of the streak on dark maps had been given its soft start.)
+     */
+    private static float easeIn;
 
     /**
      * The radius of an engine right now. The game makes it swell by up to a quarter and back, twice a second or so
@@ -301,6 +334,7 @@ public class Boosters{
             on = Core.settings.getBool(ShaderMod.boostersOn, true);
             tinted = Core.settings.getBool(ShaderMod.boostersTint, true);
             breathing = Math.max(ShaderMod.percent(ShaderMod.boostersBreath, 100), 0f);
+            flicker = Math.max(ShaderMod.percent(ShaderMod.boostersFlicker, 100), 0f);
             if(soft == null) soft = Core.atlas.find("circle-shadow");
         }
         return on && soft != null && soft.found();
@@ -361,9 +395,13 @@ public class Boosters{
         for(int i = 0; i < 4; i++){
             float out = i * 90f + rotation, seed = i * 2.4f;
             float shimmer = 1f + (0.06f * Mathf.sin(time * 0.6f + seed) + 0.04f * Mathf.sin(time * 1.7f + seed * 1.7f)) * breathing;
+            flare = flicker;
+            tempo = tempoOf(rad);
             Flame.burn(core.x + Mathf.cosDeg(out) * edge, core.y + Mathf.sinDeg(out) * edge, out, rad, rad * 6f * shimmer, 1.1f, bend, 0f, rad * 0.12f, time * 0.9f + seed,
                 team, Color.white, 0.92f + 0.08f * Mathf.sin(time * 0.9f + seed) * Math.min(breathing, 1f));
         }
+        flare = 0f;
+        tempo = 1f;
     }
 
     /** Puts the game's table back as it was. */
@@ -399,16 +437,123 @@ public class Boosters{
         return own.containsKey(type);
     }
 
-    /** How fast that unit is turning right now, in degrees a tick (counter-clockwise is positive), smoothed over a few frames. */
+    /**
+     * How long the exhaust at the far end of a streak has been out of the nozzle, in ticks: a streak shows which way
+     * the engine pointed over that long.
+     */
+    private static final float trailTicks = 13f;
+    /** Per unit (by id): which way it has faced over the last moments. */
+    private static final IntMap<Past> pasts = new IntMap<>();
+    /**
+     * While the engines of a unit are drawn: by how many degrees the unit has turned since the exhaust at each place
+     * along a streak left the nozzle - evenly spaced from the nozzle (0) to the tip. null = no such record (the
+     * preview, the core): the streak bends evenly, by "bend" at its tip.
+     */
+    private static float[] bends;
+
+    /**
+     * Which way a unit faced over the last moments. A streak used to bend by how fast the unit was turning right then,
+     * times a fixed time, evenly along its length - as if the unit had been turning that fast all along. After a short
+     * sharp turn that put the far end where the unit had never pointed: the tail was bent further than the path the
+     * unit had flown (the maker, drawing the path beside it: "it flies like this, but the tail looks bent more"). Now
+     * every place along the streak is turned back by what the unit has really turned since that exhaust left the
+     * nozzle: the far end stays where the engine pointed then, and only the near part follows a turn at first.
+     */
+    private static class Past{
+        static final int kept = 24, marks = 8;
+        /** Samples, about one a tick, newest at head: the time (ticks) and the way the unit faced, counted on through full turns. */
+        final float[] when = new float[kept], faced = new float[kept];
+        int head, count;
+        /** unit.rotation when last looked at, and the same counted on through full turns. */
+        float seen, facing;
+        long frame = -1;
+        final float[] back = new float[marks + 1];
+
+        /** The way the unit faced at that time; "now" and "facing" are the newest there is. */
+        float at(float time, float now){
+            float t1 = now, f1 = facing;
+            for(int n = 0, i = head; n < count; n++, i = (i + kept - 1) % kept){
+                if(when[i] <= time){
+                    return t1 - when[i] < 0.0001f ? f1 : Mathf.lerp(faced[i], f1, Mathf.clamp((time - when[i]) / (t1 - when[i])));
+                }
+                t1 = when[i];
+                f1 = faced[i];
+            }
+            // before the first sample: it is taken not to have turned
+            return f1;
+        }
+    }
+
+    /** By how much that unit has turned since the exhaust along its streaks left the nozzle (see bends); worked out once a frame. */
+    private static float[] pastOf(Unit unit){
+        Past past = pasts.get(unit.id);
+        if(past == null){
+            // units come and go; their numbers are never used again
+            if(pasts.size > 4000) pasts.clear();
+            past = new Past();
+            past.seen = unit.rotation;
+            pasts.put(unit.id, past);
+        }
+        long frame = Core.graphics.getFrameId();
+        if(past.frame == frame) return past.back;
+        past.frame = frame;
+        float now = Time.time;
+        // the clock went back by more than a hiccup (another world), or the unit was out of sight for longer than a streak
+        // remembers: start again
+        if(past.count > 0 && (now < past.when[past.head] - 2f || now - past.when[past.head] > trailTicks)){
+            past.count = 0;
+            past.seen = unit.rotation;
+        }
+        past.facing += Mathf.mod(unit.rotation - past.seen + 180f, 360f) - 180f;
+        past.seen = unit.rotation;
+        if(past.count == 0 || now - past.when[past.head] >= 0.75f){
+            past.head = (past.head + 1) % Past.kept;
+            past.when[past.head] = now;
+            past.faced[past.head] = past.facing;
+            if(past.count < Past.kept) past.count++;
+        }
+        for(int k = 0; k <= Past.marks; k++){
+            // (a unit that spins on the spot would wind its streaks up into a coil)
+            past.back[k] = Mathf.clamp(past.facing - past.at(now - trailTicks * k / Past.marks, now), -80f, 80f);
+        }
+        // Rounded off a little along the streak: exhaust spreads, and a turn made within a few ticks would stand in
+        // the streak as a corner. (The nozzle end stays as it is: there the streak points the way the engine does.)
+        for(int pass = 0; pass < 2; pass++){
+            float before = past.back[0];
+            for(int k = 1; k <= Past.marks; k++){
+                float here = past.back[k], after = k < Past.marks ? past.back[k + 1] : here;
+                past.back[k] = (before + here * 2f + after) / 4f;
+                before = here;
+            }
+        }
+        return past.back;
+    }
+
+    /** By how many degrees the streak is turned back the share "at" of its length from the nozzle. */
+    private static float turned(float bend, float at){
+        if(bends == null) return bend * at;
+        float f = Mathf.clamp(at) * (bends.length - 1);
+        int k = Math.min((int)f, bends.length - 2);
+        return Mathf.lerp(bends[k], bends[k + 1], f - k);
+    }
+
+    /**
+     * How fast that unit is turning right now, in degrees a tick (counter-clockwise is positive), smoothed over a few
+     * frames. (What the streaks bent by before they went by the record above; kept for comparing: the hidden setting
+     * mshaders-flame-history, off.)
+     */
     private static float turnOf(Unit unit){
         float frame = Core.graphics.getFrameId() % 1000000L;
         float[] state = turns.get(unit.id);
         if(state == null){
             // units come and go; their numbers are never used again
             if(turns.size > 4000) turns.clear();
-            turns.put(unit.id, new float[]{unit.rotation, 0f, frame});
+            turns.put(unit.id, new float[]{unit.rotation, 0f, frame, Time.time});
             return 0f;
         }
+        // (not while the game's clock stands still)
+        if(state[3] == Time.time) return state[1];
+        state[3] = Time.time;
         if(state[2] != frame && !Vars.state.isPaused() && Time.delta > 0.0001f){
             float turned = Mathf.mod(unit.rotation - state[0] + 180f, 360f) - 180f;
             state[1] = Mathf.lerp(state[1], Mathf.clamp(turned / Time.delta, -8f, 8f), Mathf.clamp(0.2f * Time.delta));
@@ -452,8 +597,12 @@ public class Boosters{
             float push = Mathf.clamp(-(unit.vel.x * ax + unit.vel.y * ay) / top, 0f, 1.2f);
             // how fast the unit drifts sideways, to the left of the exhaust, as a share of its top speed
             float drift = Mathf.clamp((unit.vel.x * -ay + unit.vel.y * ax) / top, -1f, 1f);
-            engine(ex, ey, rad, out, push, drift, turnOf(unit), unit.id * 3.7f + x * 1.3f + y * 0.7f, Mathf.clamp(scale), team, type.engineColorInner, look,
+            // the streaks bend by what the unit has really turned (see Past)
+            boolean record = Core.settings.getBool("mshaders-flame-history", true);
+            bends = record ? pastOf(unit) : null;
+            engine(ex, ey, rad, out, push, drift, record ? 0f : turnOf(unit), unit.id * 3.7f + x * 1.3f + y * 0.7f, Mathf.clamp(scale), team, type.engineColorInner, look,
                 Vars.state.rules.lighting && Vars.renderer.lights != null);
+            bends = null;
         }
 
         /**
@@ -476,7 +625,12 @@ public class Boosters{
             float ripple = rad * 0.13f * push, phase = time * 0.9f + seed;
 
             // a streak that grows longer grows a little wider too
+            // the flame flickers the more, the harder the engine pushes
+            flare = flicker * (0.35f + 0.65f * Mathf.clamp(push));
+            tempo = tempoOf(rad);
             burn(ex, ey, out, rad, length, (1f + 0.25f * Mathf.clamp(push)) * look.width, bend, lean, ripple, phase, team, hot, bright);
+            flare = 0f;
+            tempo = 1f;
             if(look.style != plain) ornaments(look.style, ex, ey, out, rad * look.width, length, bend, lean, push, time, seed, team, hot, bright);
 
             // On a dark map the streak is a light, not a painted thing the dark lies on: its glow goes into the game's
@@ -488,9 +642,12 @@ public class Boosters{
                 // the light "split at every joint".)
                 float wide = Math.max(rad * 2.6f, length * 0.16f), reach = length * 1.15f + rad * 2f, lit = 0.75f * bright;
                 Vars.renderer.lights.add(() -> {
+                    fadingIn = true;
                     streak(ex, ey, out, reach, 1f, bend, lean, 0f, 0f, wide, 0.2f, team.r, team.g, team.b, team.r, team.g, team.b, lit);
+                    fadingIn = false;
+                    // the round glow at the nozzle: at least as wide as the streak's light is there
                     Draw.color(team, lit);
-                    Draw.rect(soft, ex, ey, rad * 5f, rad * 5f);
+                    Draw.rect(soft, ex, ey, Math.max(rad * 5f, wide * 2.6f), Math.max(rad * 5f, wide * 2.6f));
                     Draw.color();
                 });
             }
@@ -515,7 +672,7 @@ public class Boosters{
                 // 0 = just out of the nozzle .. 1 = gone
                 float s = (k + flow) / count, at = 0.05f + s * reach;
                 point(ex, ey, out, length, bend, lean, at);
-                float cx = tipX, cy = tipY, angle = out - bend * at;
+                float cx = tipX, cy = tipY, angle = out - turned(bend, at);
                 // fainter while the unit hovers: the streak is short then, and they crowd at the nozzle
                 float alpha = bright * (float)Math.pow(1f - s, 1.25) * Mathf.clamp(s * 7f) * (0.45f + 0.55f * Mathf.clamp(push));
                 float mix = 0.25f + 0.6f * s;
@@ -593,9 +750,33 @@ public class Boosters{
             Draw.blend(Blending.additive);
             // the glow along the streak: the same streak again, wide and faint, so it follows every curve
             // (one soft sprite pulled long lay straight from nozzle to tip, beside a streak that curved)
+            easeIn = Core.settings.getBool("mshaders-flame-ease", true) ? rad * 1.9f * thick : 0f;
             streak(ex, ey, out, length, 1f, bend, lean, ripple, phase, rad * 1.9f * thick, 0f, team.r, team.g, team.b, team.r, team.g, team.b, 0.3f * bright);
+            easeIn = 0f;
             // the white-hot line inside
             streak(ex, ey, out, length, 0.7f, bend, lean, ripple, phase, rad * 0.4f * thick, 0.45f, hot.r, hot.g, hot.b, hot.r, hot.g, hot.b, 0.95f * bright);
+            // Flame breaking up along the far half: small licks that come away from the edge of the streak, drift
+            // back past its tip, thin out and go out - one after another, never two alike. They are as wide as the
+            // streak is where they leave it (it narrows to a point), and three times as long as wide.
+            // (First these were thin straight streaks leaping out at an angle: spikes, like whiskers on the flame.
+            // Then soft round puffs sized by the nozzle: behind the short flame of a large unit that hovers, two of
+            // them sat side by side like a pair of balloons.)
+            if(flare > 0.001f){
+                float all = Math.min(flare, 2f);
+                for(int k = 0; k < 3; k++){
+                    float turn = phase * tempo * (0.05f + 0.014f * k) + k * 0.37f, life = turn - (float)Math.floor(turn);
+                    float at = 0.55f + 0.55f * life, fade = Mathf.sin(life * Mathf.pi);
+                    point(ex, ey, out, length, bend, lean, at);
+                    float angle = out - turned(bend, Math.min(at, 1f));
+                    // half the width of the streak here; a little is left past its tip
+                    float half = rad * 0.78f * thick * Math.max(1f - at, 0.12f);
+                    float aside = (k % 2 == 0 ? 1f : -1f) * half * (0.5f + 0.5f * life);
+                    float x = tipX - Mathf.sinDeg(angle) * aside, y = tipY + Mathf.cosDeg(angle) * aside;
+                    float across = half * (1.5f - 0.5f * life) * (0.8f + 0.2f * all);
+                    Draw.color(Mathf.lerp(team.r, hot.r, 0.25f), Mathf.lerp(team.g, hot.g, 0.25f), Mathf.lerp(team.b, hot.b, 0.25f), 0.5f * bright * fade * Math.min(all, 1f));
+                    Draw.rect(soft, x, y, across * 3.2f, across, angle);
+                }
+            }
             // the nozzle: a halo in the team's colour and a white point in it
             Draw.color(team, 0.4f * bright);
             Draw.rect(soft, ex, ey, rad * 3.6f, rad * 3.6f);
@@ -607,7 +788,7 @@ public class Boosters{
 
         /** The place on the middle line of the streak the share "at" of its length from the nozzle (without the ripple), into tipX, tipY. */
         private static void point(float ex, float ey, float out, float length, float bend, float lean, float at){
-            float angle = out - bend * at, side = lean * (float)Math.pow(at, 1.6);
+            float angle = out - turned(bend, at), side = lean * (float)Math.pow(at, 1.6);
             tipX = ex + Mathf.cosDeg(angle) * length * at - Mathf.sinDeg(out) * side;
             tipY = ey + Mathf.sinDeg(angle) * length * at + Mathf.cosDeg(out) * side;
         }
@@ -628,7 +809,8 @@ public class Boosters{
          */
         private static void streak(float ex, float ey, float out, float length, float span, float bend, float lean, float ripple, float phase, float wide, float solid,
                                    float r, float g, float b, float r0, float g0, float b0, float alpha){
-            int steps = 9;
+            // (a flame that flickers needs more pieces towards its far end)
+            int steps = flare > 0.001f ? 16 : 9;
             float sx = -Mathf.sinDeg(out), sy = Mathf.cosDeg(out);
             float px = 0f, py = 0f, pw = 0f, pMid = 0f, pRim = 0f, pnx = 0f, pny = 0f;
             for(int i = 0; i <= steps; i++){
@@ -637,13 +819,30 @@ public class Boosters{
                 t *= t;
                 // "at" runs along the whole streak, t along this one
                 float at = t * span, left = 1f - t, mix = Mathf.clamp(t * 4f);
-                float angle = out - bend * at, dx = Mathf.cosDeg(angle), dy = Mathf.sinDeg(angle);
-                float side = lean * (float)Math.pow(at, 1.6) + ripple * at * Mathf.sin(phase - at * 6f);
+                float angle = out - turned(bend, at), dx = Mathf.cosDeg(angle), dy = Mathf.sinDeg(angle);
+                // (The ripple is part of the flicker too: with the flicker set to nothing the streak stands still. It
+                // was not, and the maker, with the setting at "off": "the flicker is still there". And it runs at the
+                // tempo of the engine, as the rest does.)
+                float side = lean * (float)Math.pow(at, 1.6) + ripple * Math.min(flicker, 1f) * at * Mathf.sin(phase * tempo - at * 6f);
+                // Fire: steady at the nozzle, restless towards the far end - by the square of the way there. The
+                // middle line whips from side to side, the width swells and pinches in waves that run backwards, and
+                // the light gutters.
+                float wild = flare * at * at, swell = 1f, gutter = 1f;
+                if(wild > 0.0001f){
+                    // long waves only: short ones, between pieces this far apart, came out as a zigzag with dark
+                    // notches cut into the flame
+                    // (slower for a large engine, and swinging less far for its width)
+                    float beat = phase * tempo, sway = 0.55f + 0.45f * tempo;
+                    side += wide * 1.1f * sway * wild * (0.6f * Mathf.sin(beat * 0.8f - at * 4.5f) + 0.4f * Mathf.sin(beat * 1.45f - at * 7.5f + 1.7f));
+                    swell = Math.max(1f + Math.min(wild, 1.2f) * (0.28f * Mathf.sin(beat * 1.1f - at * 5.5f + 0.6f) + 0.14f * Mathf.sin(beat * 1.9f - at * 9f)), 0.5f);
+                    gutter = 1f - Math.min(wild, 1f) * 0.35f * (0.5f + 0.5f * Mathf.sin(beat * 1.3f - at * 5f + 2.1f));
+                }
                 float cx = ex + dx * length * at + sx * side, cy = ey + dy * length * at + sy * side;
                 // a wedge: the width falls evenly to nothing at the tip
-                float nx = -dy, ny = dx, w = wide * left;
+                float nx = -dy, ny = dx, w = wide * left * swell;
                 float cr = Mathf.lerp(r0, r, mix), cg = Mathf.lerp(g0, g, mix), cb = Mathf.lerp(b0, b, mix);
-                float mid = Color.toFloatBits(cr, cg, cb, alpha * (float)Math.pow(left, 0.75)), rim = Color.toFloatBits(cr, cg, cb, 0f);
+                float rise = fadingIn ? Mathf.clamp(at / 0.16f) : easeIn > 0f ? Mathf.clamp(at * length / easeIn) : 1f;
+                float mid = Color.toFloatBits(cr, cg, cb, alpha * gutter * rise * (float)Math.pow(left, 0.75)), rim = Color.toFloatBits(cr, cg, cb, 0f);
                 if(i > 0){
                     float ps = pw * solid, ws = w * solid;
                     // the two soft edges

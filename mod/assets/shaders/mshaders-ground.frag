@@ -15,8 +15,11 @@
 // cleared, drawn into and laid over the whole screen. On a phone that - not the arithmetic below - was the cost.)
 uniform sampler2D u_texture;
 uniform sampler2D u_noise;   // sprites/noise.png, 128x128, repeating, linear filtered; one blob is about 1/25 of it
-uniform sampler2D u_kinds;   // one texel per tile, nearest: red = kind * 32 / 255
+uniform sampler2D u_kinds;   // one texel per tile, nearest: the upper 3 bits of red = the kind; the rest = where the tile's ore sprite is (below)
 uniform vec2 u_tiles;        // size of the map in tiles; 0 = no such picture, everything is drawn as it is
+uniform sampler2D u_ores;    // the game's sprite sheet with the ore sprites on it
+uniform vec2 u_sheet;        // its size in pixels; 0 = none, the ores are shaded as part of the ground
+uniform float u_oreSize;     // how many pixels across an ore sprite is (it covers one tile)
 
 uniform vec2 u_campos;       // world position of the lower-left screen corner
 uniform vec2 u_resolution;   // camera size in world units (1 tile = 8)
@@ -38,6 +41,7 @@ varying vec2 v_texCoords;
 
 const vec2 wind = vec2(0.94, 0.34);   // the wind blows towards the right and a little up
 const float SOFT_RELIEF = 0.45;       // how much of the relief sand and grass keep
+const float ORE_LIFT = 0.2;           // how far an ore stands above the ground it lies on, in the units of the relief (brightness)
 
 float noise(vec2 p){
     return texture2D(u_noise, p).r;
@@ -75,6 +79,25 @@ float glints(vec2 world, vec2 eye, float shift, float size, float drift, float l
     return smoothstep(lo, hi, f);
 }
 
+// The four bytes of the texel of the tile that place is on.
+vec4 tileBytes(vec2 world){
+    return floor(texture2D(u_kinds, (world + 4.0) / (8.0 * u_tiles)) * 255.0 + 0.5);
+}
+
+// Whether the tile with those bytes has an ore on it.
+bool hasOre(vec4 bytes){
+    return mod(bytes.r, 32.0) + bytes.g + bytes.b + bytes.a > 0.5;
+}
+
+// How much of that place is ore: the alpha of the tile's ore sprite there (its drop shadow, alpha 0.3, is not ore).
+float oreOn(vec2 world, vec4 bytes){
+    if(!hasOre(bytes)) return 0.0;
+    vec2 corner = vec2(mod(bytes.r, 32.0) * 256.0 + bytes.g, bytes.b * 256.0 + bytes.a);
+    vec2 f = fract((world + 4.0) / 8.0);
+    // (the sheet has its first row on top)
+    return smoothstep(0.5, 0.9, texture2D(u_ores, (corner + vec2(f.x, 1.0 - f.y) * u_oreSize) / u_sheet).a);
+}
+
 void main(){
     // This shader runs over the whole screen. Where the layer has nothing, skip all the work.
     vec4 base = texture2D(u_texture, v_texCoords);
@@ -90,8 +113,12 @@ void main(){
 
     // which kind of ground the tile under this pixel is (tile n covers n * 8 - 4 .. n * 8 + 4); 0 = none of them:
     // the edge of one of these floors lying over a tile of another floor, which is drawn as it is
-    float kind = u_tiles.x > 0.5 ? floor(texture2D(u_kinds, (world + 4.0) / (8.0 * u_tiles)).r * 7.96875 + 0.5) : 0.0;
+    vec4 bytes = u_tiles.x > 0.5 ? tileBytes(world) : vec4(0.0);
+    float kind = floor(bytes.r / 32.0 + 0.01);
     bool hot = kind > 5.5 && kind < 6.5;
+    // An ore is drawn with its floor, into this layer. How much of this pixel is ore:
+    bool oreTile = u_sheet.x > 0.5 && hasOre(bytes);
+    float ore = oreTile ? oreOn(world, bytes) : 0.0;
 
     if(hot){
         // heat shimmer: the picture itself wobbles a little (never pulling in the empty area outside the layer)
@@ -108,9 +135,12 @@ void main(){
     // sprites): where the ground
     // falls towards the light it is lit, where it rises towards the light it is in shade.
     // (Not on hot rock: its light parts are glowing cracks, which are lower, not higher.)
-    if(!hot && u_relief > 0.001){
+    // smaller than a screen pixel it would only be noise: it fades out when zoomed far out
+    float near = 1.0 - smoothstep(0.45, 1.0, u_px);
+    if(!hot && u_relief > 0.001 && near > 0.0){
         // one sprite pixel (a quarter of a world unit), but never less than a screen pixel
-        vec2 reach = u_sunDir * max(0.25, u_px) / u_resolution;
+        vec2 pace = u_sunDir * max(0.25, u_px);
+        vec2 reach = pace / u_resolution;
         vec4 lit = texture2D(u_texture, v_texCoords + reach), shaded = texture2D(u_texture, v_texCoords - reach);
         // not across the edge of the layer, where the buffer is empty
         if(lit.a > 0.99 && shaded.a > 0.99){
@@ -121,10 +151,23 @@ void main(){
             // (Shading the sand as dunes instead was tried and taken out again: among ground that is flat everywhere
             // else, the sand alone seemed to rise.)
             float keep = (kind > 1.5 && kind < 2.5) || (kind > 4.5 && kind < 5.5) ? SOFT_RELIEF : 1.0;
-            // smaller than a screen pixel it would only be noise: fade out when zoomed far out
-            color *= 1.0 + clamp(-rise * 2.2, -0.22, 0.28) * u_relief * keep * (1.0 - smoothstep(0.45, 1.0, u_px));
+            // An ore lies on the ground: it stands above it whatever the two colours are. (Read as heights like the
+            // rest, an ore was pebbles on dark rock - and holes on sand and grass, which are lighter than it.) At
+            // the rim of an ore the step is the ore's height; the ground beside it is not lit by it, only shaded.
+            // On the ore itself the relief is the same on every ground.
+            if(oreTile){
+                vec2 sunward = world + pace, away = world - pace;
+                float up = oreOn(sunward, tileBytes(sunward)), down = oreOn(away, tileBytes(away));
+                float rim = up - down;
+                rise = rise * (1.0 - abs(rim)) + (ore > 0.5 ? rim : max(rim, 0.0)) * ORE_LIFT;
+                keep = mix(keep, 1.0, max(ore, max(up, down)));
+            }
+            color *= 1.0 + clamp(-rise * 2.2, -0.22, 0.28) * u_relief * keep * near;
         }
     }
+
+    // (what the ground of each kind does is not done to the ore lying on it: the ore goes back to this)
+    vec3 plain = color;
 
     if(kind < 0.5){
         // none of the kinds: as it is
@@ -226,6 +269,8 @@ void main(){
         // fine scratches along the same diagonal
         if(fine > 0.0) color *= 1.0 + (noise(vec2(along / 160.0, across / 14.0)) - 0.5) * 0.07 * a * fine;
     }
+
+    if(ore > 0.0 && !hot) color = mix(color, plain, ore);
 
     gl_FragColor = vec4(color, base.a);
 }

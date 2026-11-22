@@ -20,6 +20,7 @@ uniform vec2 u_tile;      // size of one tile in texture coordinates (1 / map si
 uniform float u_length;   // shadow length of a block one tile tall, in tiles
 uniform float u_strength; // 1 = as dark as the built-in shadow under a block
 uniform float u_soft;     // 0 = edges as sharp as the screen allows, 1 = soft and wide
+uniform float u_ao;       // the soft dark rim all around a block (ambient occlusion): 1 = as dark as the game's own, 0 = none
 uniform float u_pixel;    // size of one screen pixel in tiles
 uniform float u_wet;      // how much of the shadow is laid where a mirror image lies on water or ice (1 = all of it)
 uniform sampler2D u_mirror;   // the mirror picture of the previous frame (mshaders-objects.frag): alpha = how much image
@@ -164,8 +165,11 @@ void main(){
         if(t > range) break;
     }
 
-    // contact shade: the soft dark rim the built-in shadow has all around a block, kept faintly so blocks still sit on
-    // the ground on their lit sides (the blurred mask, read where the point is)
+    // Ambient occlusion: the soft dark rim the built-in shadow has all around a block - the blurred mask, read where the
+    // point is, exactly as the game reads it. It does not come from the sun: it has a strength of its own (u_ao) and
+    // does not follow the sun's strength, the time of day or the lamps. (It was kept at 0.3 of the sun shadow's
+    // strength, about a fifth of the game's: without it blocks looked cut out and laid on the ground - the maker:
+    // "without the slight shadow around the blocks something looks odd".)
     float rim = (1.0 - texture2D(u_texture, v_texCoords).r) / 0.71;
     if(u_shaped > 0.5 && rim > 0.01){
         // Around a block that is not drawn as a full square the rim follows what is drawn (the rim of the square
@@ -184,7 +188,8 @@ void main(){
             }
         }
     }
-    shade = max(shade, clamp(rim, 0.0, 1.0) * 0.30);
+    // (the game's mask holds 0.71 under a block: the same darkness at u_ao = 1)
+    float ao = clamp(rim, 0.0, 1.0) * 0.71 * u_ao;
 
     // Where the mirror image of a building lies on water or ice, the shadow is laid on more lightly, so the image can
     // be seen inside it. Only there: making every shadow on ice lighter left boulders and conveyors standing on the
@@ -193,7 +198,9 @@ void main(){
         float kind = texture2D(u_heights, (floor(p) + 0.5) * u_tile).a;
         vec2 at = (p * 8.0 - 4.0 - u_mirrorCam.xy) / u_mirrorCam.zw;
         if(kind > 0.15 && kind < 0.40 && at.x > 0.0 && at.y > 0.0 && at.x < 1.0 && at.y < 1.0){
-            shade *= mix(1.0, u_wet, texture2D(u_mirror, at).a);
+            float wet = mix(1.0, u_wet, texture2D(u_mirror, at).a);
+            shade *= wet;
+            ao *= wet;
         }
     }
     // Where a lamp shines, the sun is not the only light: its shadow takes away a smaller share of the light there.
@@ -202,5 +209,5 @@ void main(){
         vec3 lamp = texture2D(u_fill, gl_FragCoord.xy / u_screen).rgb;
         shade /= 1.0 + max(lamp.r, max(lamp.g, lamp.b)) * u_fillK;
     }
-    gl_FragColor = vec4(0.0, 0.0, 0.0, shade * u_strength);
+    gl_FragColor = vec4(0.0, 0.0, 0.0, max(shade * u_strength, ao));
 }

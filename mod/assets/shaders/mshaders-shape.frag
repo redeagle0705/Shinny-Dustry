@@ -32,6 +32,7 @@ uniform vec2 u_sunDir;         // direction towards the sun on the ground, lengt
 uniform float u_aimed;         // 1 when u_aim holds this frame's light directions
 uniform float u_glint;         // metal glint strength, 0 = off
 uniform float u_band;          // strength of the drifting sun band
+uniform float u_bandWave;      // 1 = the band winds and comes at random, 0 = straight, one after another
 uniform float u_time;          // seconds
 uniform float u_metal;         // how much the top of the gloss scale is shaded as metal: 0 = polished only, 1 = metal
 
@@ -95,6 +96,23 @@ float heightAt(vec2 uv, float own){
     vec4 s = texture2D(u_texture, uv);
     if(s.a < 0.5 || s.b > BETWEEN * s.a) return own;
     return s.r / s.a;
+}
+
+
+// The bright band of sunlight that drifts across the map ("dir": the way it travels). Once a straight band every 170
+// world units, one after another at one pace; now its front winds, and the winding drifts along it, and of those
+// places a band could come by only about half bring one, each a little brighter or fainter and wider or narrower - at
+// no steady beat. ("Not straight, wavy, at random intervals", a player asked; u_bandWave 0 gives the old band back.)
+float sunBand(vec2 world, vec2 dir, float t){
+    float along = dot(world, dir);
+    if(u_bandWave < 0.5) return pow(0.5 + 0.5 * sin((along / 170.0 - t * 0.22) * 6.2832), 28.0);
+    float across = dot(world, vec2(-dir.y, dir.x));
+    along += sin(across / 45.0 + t * 0.35) * 14.0 + sin(across / 110.0 - t * 0.12) * 24.0;
+    float p = along / 170.0 - t * 0.22;
+    float n = floor(p);     // which band (its brightest is at a quarter of the way through)
+    float h1 = fract(sin(n * 12.9898 + 4.1) * 43758.5453), h2 = fract(sin(n * 78.233 + 1.7) * 24634.6345);
+    if(h1 > 0.5) return 0.0;
+    return (0.6 + 0.4 * h2) * pow(0.5 + 0.5 * sin(p * 6.2832), 20.0 + 20.0 * h2);
 }
 
 void main(){
@@ -246,7 +264,7 @@ void main(){
     if(u_glint > 0.001 && much > 0.0){
         float turned = dot(n.xy, u_sunDir);
         float lit = pow(clamp(turned * 1.6, 0.0, 1.0), keen);
-        float band = pow(0.5 + 0.5 * sin((dot(world, vec2(0.7071, 0.7071)) / 170.0 - u_time * 0.22) * 6.2832), 28.0);
+        float band = sunBand(world, vec2(0.7071, 0.7071), u_time);
         float shine = lit * (0.05 + 0.30 * band * u_band);
         if(u_aimed > 0.5){
             vec2 a = texture2D(u_aim, v_texCoords).rg * 2.0 - 1.0;

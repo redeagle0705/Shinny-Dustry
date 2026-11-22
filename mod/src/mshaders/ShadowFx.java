@@ -112,6 +112,7 @@ public class ShadowFx{
                     if(hasUniform("u_strength")) setUniformf("u_strength", ShaderMod.percent(ShaderMod.shadowStrength, 70) * ShaderMod.daylight());
                     // quality 100% = edges as sharp as the screen allows, 0% = soft and wide
                     if(hasUniform("u_soft")) setUniformf("u_soft", 1f - ShaderMod.percent(ShaderMod.shadowQuality, 80));
+                    if(hasUniform("u_ao")) setUniformf("u_ao", ShaderMod.percent(ShaderMod.shadowAo, 100));
                     if(hasUniform("u_pixel")) setUniformf("u_pixel", Core.camera.width / Math.max(Core.graphics.getWidth(), 1) / Vars.tilesize);
                     if(hasUniform("u_sun")) setUniformf("u_sun", ShaderMod.sunX(), ShaderMod.sunY());
                     applyFill(this);
@@ -165,6 +166,7 @@ public class ShadowFx{
                     if(hasUniform("u_length")) setUniformf("u_length", Core.settings.getInt(ShaderMod.shadowLength, 15) / 10f * dayFactor());
                     if(hasUniform("u_strength")) setUniformf("u_strength", ShaderMod.percent(ShaderMod.shadowStrength, 70) * ShaderMod.daylight());
                     if(hasUniform("u_soft")) setUniformf("u_soft", 1f - ShaderMod.percent(ShaderMod.shadowQuality, 80));
+                    if(hasUniform("u_ao")) setUniformf("u_ao", ShaderMod.percent(ShaderMod.shadowAo, 100));
                     if(hasUniform("u_pixel")) setUniformf("u_pixel", Core.camera.width / Math.max(Core.graphics.getWidth(), 1) / Vars.tilesize);
                     if(hasUniform("u_sun")) setUniformf("u_sun", ShaderMod.sunX(), ShaderMod.sunY());
                 }

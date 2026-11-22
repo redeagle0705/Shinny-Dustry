@@ -356,6 +356,7 @@ public class Scene{
                     set(this, "u_coreOwn", !shapingUnits && !Core.settings.getBool(ShaderMod.normalsOwnLight, false) ? 1f : 0f);
                     set(this, "u_glint", wantGlint ? ShaderMod.percent(ShaderMod.glintStrength, 100) : 0f);
                     set(this, "u_band", ShaderMod.percent(ShaderMod.glintBand, 100));
+                    set(this, "u_bandWave", Core.settings.getBool("mshaders-band-wave", true) ? 1f : 0f);
                     set(this, "u_time", Time.globalTime / 60f);
                     // On a dark map the daylight counts for little: what the darkness leaves of it. Lamps then do the lighting.
                     set(this, "u_day", ShaderMod.daylight());
@@ -386,6 +387,8 @@ public class Scene{
                 @Override
                 public void apply(){
                     if(hasUniform("u_texel")) setUniformf("u_texel", 1f / raw.getWidth(), 1f / raw.getHeight());
+                    // the raw picture is on pixels that stay put on the ground: how far the screen is past the last whole one
+                    if(hasUniform("u_shift")) setUniformf("u_shift", lightShiftX, lightShiftY);
                 }
             };
             lightShader = new Shader(vert, lightsDefine + lightSource){
@@ -397,6 +400,15 @@ public class Scene{
                         return;
                     }
                     setCamera(this);
+                    // the picture's pixels stay put on the ground while the view moves (mshaders-light.frag, u_campos)
+                    float left = Core.camera.position.x - Core.camera.width / 2f, low = Core.camera.position.y - Core.camera.height / 2f;
+                    float grainX = Core.camera.width / Math.max(raw.getWidth(), 1), grainY = Core.camera.height / Math.max(raw.getHeight(), 1);
+                    float fromX = snapped(left, grainX), fromY = snapped(low, grainY);
+                    lightShiftX = (left - fromX) / Core.camera.width;
+                    lightShiftY = (low - fromY) / Core.camera.height;
+                    if(hasUniform("u_campos")) setUniformf("u_campos", fromX, fromY);
+                    if(hasUniform("u_view")) setUniformf("u_view", left, low);
+                    if(hasUniform("u_grain")) setUniformf("u_grain", grainX, grainY);
                     // units in the way of the light (UnitShades)
                     boolean shaded = unitsShading();
                     set(this, "u_unitsOn", shaded ? 1f : 0f);
@@ -409,6 +421,9 @@ public class Scene{
                         set(this, "u_unitDepth", Math.min(Math.max(ShaderMod.percent(ShaderMod.lightsUnitsDepth, 65), 0f), 1f));
                     }
                     set(this, "u_masked", lightMask != null && !lightOpen ? 1f : 0f);
+                    // how far behind a point on a block its light is looked up (mshaders-light.frag): a little over two
+                    // pixels of this picture - one for its smoothing, one for its stretching - and no more than a third of a tile
+                    set(this, "u_back", Math.min(2.25f * Core.camera.width / Math.max(raw.getWidth(), 1), 2.4f));
                     set(this, "u_own", lightMaskOwn ? 1f : 0f);
                     set(this, "u_mode", lightMode);
                     sendLights(this, squared ? squareCount : lightCount);
@@ -789,6 +804,30 @@ public class Scene{
         Blending.normal.apply();
     }
 
+    /** The world as it stands right before the shields are drawn (half size), for their refraction (Shields). */
+    private FrameBuffer backdrop;
+    private long backdropFrame = -1;
+
+    /**
+     * Copies the world as it stands now into the backdrop and returns it; null while the world is not drawn into the
+     * scene buffer this frame (no effect wants it), or the copy cannot be made.
+     */
+    public Texture shieldBackdrop(){
+        if(!capturing || scene == null) return null;
+        long frame = Core.graphics.getFrameId();
+        if(backdropFrame != frame){
+            if(backdrop == null) backdrop = new FrameBuffer();
+            copyScene(backdrop);
+            backdropFrame = frame;
+        }
+        return backdrop.getTexture();
+    }
+
+    /** The backdrop of this frame, if it was made; null otherwise. */
+    public Texture backdropNow(){
+        return backdrop != null && backdropFrame == Core.graphics.getFrameId() ? backdrop.getTexture() : null;
+    }
+
     private void snapshotBefore(){
         if(!capturing) return;
         copyScene(before);
@@ -937,6 +976,14 @@ public class Scene{
         lightMaskOwn = own != null;
     }
 
+    /** How far the screen is past the last whole pixel of the raw light picture, in texture coordinates (set when that picture is made). */
+    private float lightShiftX, lightShiftY;
+
+    /** That place moved back to a whole number of steps: where the light picture begins, so its pixels stay put on the ground. */
+    private static float snapped(float at, float step){
+        return Core.settings.getBool("mshaders-light-snap", true) && step > 0f ? (float)Math.floor(at / step) * step : at;
+    }
+
     /** Hands a shader its list of lights: the whole list of the frame, or while a pass is drawn square by square, that square's. */
     private void sendLights(Shader shader, int count){
         set(shader, "u_count", count);
@@ -1009,6 +1056,11 @@ public class Scene{
         }
         float cx = Core.camera.position.x - Core.camera.width / 2f, cy = Core.camera.position.y - Core.camera.height / 2f;
         float cw = Core.camera.width, ch = Core.camera.height;
+        // the light picture begins where its pixels do (see the light shader's u_campos)
+        if(shader == lightShader){
+            cx = snapped(cx, cw / w);
+            cy = snapped(cy, ch / h);
+        }
         boolean cut = Gl.isEnabled(Gl.scissorTest);
         Gl.enable(Gl.scissorTest);
         squared = true;
@@ -1403,6 +1455,7 @@ public class Scene{
         set(s, "u_glint", glintReady ? ShaderMod.percent(ShaderMod.glintStrength, 100) : 0f);
         set(s, "u_aimed", aimReady ? 1f : 0f);
         set(s, "u_band", ShaderMod.percent(ShaderMod.glintBand, 100));
+        set(s, "u_bandWave", Core.settings.getBool("mshaders-band-wave", true) ? 1f : 0f);
         set(s, "u_time", Time.globalTime / 60f);
         set(s, "u_day", ShaderMod.daylight());
         if(s.hasUniform("u_sunDir")) s.setUniformf("u_sunDir", ShaderMod.sunX(), ShaderMod.sunY());
