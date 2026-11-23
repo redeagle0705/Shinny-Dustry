@@ -3,7 +3,10 @@ package mshaders;
 import arc.*;
 import arc.graphics.gl.*;
 import arc.math.*;
+import arc.math.geom.*;
+import arc.util.*;
 import mindustry.*;
+import mindustry.type.*;
 
 /**
  * Day and night. Where the game has them - the Serpulo campaign, whose planet turns, so that the darkness of a sector
@@ -23,10 +26,22 @@ public class Daytime{
     /** -1 = sunrise .. 0 = noon .. 1 = sunset (beyond: night). */
     private static float hour;
     private static boolean own;
-    /** The campaign's light, for telling morning from evening by which way it changes. */
-    private static float anchor = -1f;
     private static boolean rising = true;
     private static long frame = -1;
+    /** Worked out once a frame (sunX/sunY are asked for by many things, per unit and per smoke puff). */
+    private static float sunX = 0.7071f, sunY = 0.7071f, length = 1f;
+
+    // The sun is moved in small steps, not a little every frame: a shadow cast along a direction that changes by a
+    // hair each frame shimmers along its edges ("the shadows sparkle a lot"). Held until the true place is a step
+    // away, then put there.
+    private static float heldTurn = Float.NaN, heldLength = Float.NaN;
+
+    /** The campaign's light at a sector for a turn of its planet (as Sector.getLight, at any rotation). */
+    private static float lightAt(Sector sector, float rotation){
+        Vec3 normal = Tmp.v31.set(sector.tile.v).rotate(Vec3.Y, -rotation).nor();
+        Vec3 light = Tmp.v32.set(sector.planet.solarSystem.position).sub(sector.planet.position).nor();
+        return (normal.dot(light) + 1f) / 2f;
+    }
 
     private static void update(){
         long now = Core.graphics.getFrameId();
@@ -34,42 +49,58 @@ public class Daytime{
         frame = now;
         elevation = Float.NaN;
         own = false;
-        if(!Vars.state.isGame()){
-            heldTurn = heldLength = Float.NaN;
-            return;
-        }
 
         float e = Float.NaN;
-        int forced = Core.settings.getInt("mshaders-test-daytime", -1);
-        var sector = Vars.state.hasSector() ? Vars.state.getSector() : null;
-        if(forced >= 0){
-            // test kit: 0 .. 100 = one day from midnight to midnight
-            float phase = forced / 100f;
-            e = -Mathf.cos(phase * Mathf.PI2);
-            rising = phase < 0.5f;
-            own = Core.settings.getBool(ShaderMod.dayOwn, false);
-        }else if(sector != null && sector.planet.updateLighting && !(sector.preset != null && sector.preset.noLighting)){
-            if(!Core.settings.getBool(ShaderMod.dayCampaign, true)) return;
-            float light = sector.getLight();
-            // morning or evening: which way the light changes (very slowly - the planet turns once in a long while)
-            if(anchor < 0f) anchor = light;
-            if(Math.abs(light - anchor) > 0.0015f){
-                rising = light > anchor;
-                anchor = light;
+        if(Vars.state.isGame()){
+            int forced = Core.settings.getInt("mshaders-test-daytime", -1);
+            var sector = Vars.state.hasSector() ? Vars.state.getSector() : null;
+            if(forced >= 0){
+                // test kit: 0 .. 100 = one day from midnight to midnight
+                float phase = forced / 100f;
+                e = -Mathf.cos(phase * Mathf.PI2);
+                rising = phase < 0.5f;
+                own = Core.settings.getBool(ShaderMod.dayOwn, false);
+            }else if(sector != null && sector.planet.updateLighting && !(sector.preset != null && sector.preset.noLighting)){
+                if(Core.settings.getBool(ShaderMod.dayCampaign, true)){
+                    float rotation = sector.planet.getRotation();
+                    float light = lightAt(sector, rotation);
+                    // morning or evening: whether the light is about to grow or to fall, a little further on in the
+                    // planet's turn (at first it was learnt from how the light changed over time - guessed on the first
+                    // frame and carried over from the last sector, so shadows swung round a while after a map loaded)
+                    rising = lightAt(sector, rotation + 1f) > light;
+                    e = light * 2f - 1f;
+                }
+            }else if(Core.settings.getBool(ShaderMod.dayOwn, false)){
+                float minutes = Math.max(Core.settings.getInt(ShaderMod.dayMinutes, 12), 1);
+                double phase = (Vars.state.tick / (minutes * 3600.0) + 0.3) % 1.0;
+                e = -(float)Math.cos(phase * Math.PI * 2.0);
+                rising = phase < 0.5;
+                own = true;
             }
-            e = light * 2f - 1f;
-        }else if(Core.settings.getBool(ShaderMod.dayOwn, false)){
-            float minutes = Math.max(Core.settings.getInt(ShaderMod.dayMinutes, 12), 1);
-            double phase = (Vars.state.tick / (minutes * 3600.0) + 0.3) % 1.0;
-            e = -(float)Math.cos(phase * Math.PI * 2.0);
-            rising = phase < 0.5;
-            own = true;
         }
-        if(Float.isNaN(e)) return;
+
+        float set = Core.settings.getInt(ShaderMod.sunAngle, 45);
+        if(Float.isNaN(e)){
+            heldTurn = heldLength = Float.NaN;
+            sunX = Mathf.cosDeg(set);
+            sunY = Mathf.sinDeg(set);
+            length = 1f;
+            return;
+        }
         elevation = e;
         // where along its way the sun is: an angle over the sky, 0 at sunrise, pi/2 at noon, pi at sunset
         float theta = rising ? (float)Math.asin(Mathf.clamp(e, -1f, 1f)) : Mathf.PI - (float)Math.asin(Mathf.clamp(e, -1f, 1f));
         hour = Mathf.clamp((theta - Mathf.halfPi) / Mathf.halfPi, -1.4f, 1.4f);
+
+        // the turn of the sun: back to the middle through the night (at midnight morning and evening meet - from one
+        // side to the other it jumped by 80 degrees)
+        float turn = Mathf.clamp(hour, -1f, 1f) * 40f * (e < 0f ? Mathf.clamp(1f + e / 0.3f) : 1f);
+        if(Float.isNaN(heldTurn) || Math.abs(turn - heldTurn) >= 2f) heldTurn = turn;
+        sunX = Mathf.cosDeg(set + heldTurn);
+        sunY = Mathf.sinDeg(set + heldTurn);
+        float l = Mathf.clamp(0.7f / Math.max(e, 0.3f), 0.6f, 1.9f);
+        if(Float.isNaN(heldLength) || Math.abs(l - heldLength) >= 0.06f) heldLength = l;
+        length = heldLength;
     }
 
     /** Whether there is a time of day now. */
@@ -78,25 +109,21 @@ public class Daytime{
         return !Float.isNaN(elevation);
     }
 
-    // The sun is moved in small steps, not a little every frame: a shadow cast along a direction that changes by a
-    // hair each frame shimmers along its edges ("the shadows sparkle a lot"). Held until the true place is a step
-    // away, then put there.
-    private static float heldTurn = Float.NaN, heldLength = Float.NaN;
+    /** The direction towards the sun on the ground, length 1 (the set angle, moved by the time of day). */
+    static float sunX(){
+        update();
+        return sunX;
+    }
 
-    /** The direction towards the sun, degrees: the set angle, turned towards the east in the morning and the west in the evening. */
-    static float sunAngle(float set){
-        if(!active()) return set;
-        float turn = Mathf.clamp(hour, -1f, 1f) * 40f;
-        if(Float.isNaN(heldTurn) || Math.abs(turn - heldTurn) >= 2f) heldTurn = turn;
-        return set + heldTurn;
+    static float sunY(){
+        update();
+        return sunY;
     }
 
     /** How long the shadows are now, as a share of the set length: short at noon, long with the sun low. */
     static float lengthFactor(){
-        if(!active()) return 1f;
-        float length = Mathf.clamp(0.7f / Math.max(elevation, 0.3f), 0.6f, 1.9f);
-        if(Float.isNaN(heldLength) || Math.abs(length - heldLength) >= 0.06f) heldLength = length;
-        return heldLength;
+        update();
+        return length;
     }
 
     /** How much of the sun there is (for the mod's own day, which has no darkness of the game's): 1 by day, little at night. */

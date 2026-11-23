@@ -692,8 +692,21 @@ public class Scene{
         headNormals.begin(Color.clear);
         int drawn = surfaces.drawUnits(layer, cutState, layState);
         Draw.flush();
+        // Where the units are cut away around the cursor (Cutaway), no shading of theirs either: it was laid on the
+        // ground showing through the hole, a ghost of the unit.
+        boolean cut = Cutaway.covers(layer);
+        if(cut && drawn > 0){
+            Draw.shader();
+            Draw.blend(Blending.disabled);
+            Draw.color(0f, 0f, 0f, 0f);
+            Fill.circle(Cutaway.clearX(), Cutaway.clearY(), Cutaway.clearR());
+            Draw.flush();
+            Draw.color();
+        }
         headNormals.end();
-        Draw.shader();
+        // the cut-away band this pass sits in goes on after it: its shader back, not the plain one
+        if(cut) Draw.shader(Cutaway.shader());
+        else Draw.shader();
         Draw.blend(previous);
         Draw.sort(true);
         if(drawn > 0){
@@ -1473,7 +1486,6 @@ public class Scene{
         setCamera(s);
         Blasts.apply(s);
         Pulses.apply(s);
-        Skies.apply(s);
         HeatHaze.apply(s);
         Daytime.apply(s);
         if(lightReady){

@@ -204,6 +204,20 @@ public class Shields{
      * a force field. How much of a shield is used up: a projector's buildup out of what it holds, a unit's shield out
      * of its most.
      */
+    private static final Seq<BaseShield.BaseShieldBuild> round = new Seq<>();
+    private static long roundLook = -100;
+    private static float largestRound = -1f;
+
+    private static float largestRound(){
+        if(largestRound < 0f){
+            largestRound = 0f;
+            for(var block : Vars.content.blocks()){
+                if(block instanceof BaseShield b) largestRound = Math.max(largestRound, b.radius);
+            }
+        }
+        return largestRound;
+    }
+
     private static void findInView(){
         inViewCount = 0;
         if(!Core.settings.getBool(ShaderMod.shieldsOn, true)
@@ -223,15 +237,23 @@ public class Shields{
         // the round shields of Erekir (shield projector, large shield projector): left out at first, so they had none of
         // the dome, the waves of light or the cracks the others have ("the large shield projector doesn't fit with the
         // other shields")
-        float cx = view.x + view.width / 2f, cy = view.y + view.height / 2f, reach = Mathf.dst(view.width, view.height) / 2f + 600f;
-        for(TeamData data : Vars.state.teams.present){
-            Vars.indexer.eachBlock(data.team, cx, cy, reach, b -> b instanceof BaseShield.BaseShieldBuild, b -> {
-                var base = (BaseShield.BaseShieldBuild)b;
-                float radius = base.radius();
-                if(base.broken || radius < 1f || !view.overlaps(b.x - radius, b.y - radius, radius * 2f, radius * 2f)) return;
-                shape(((BaseShield)b.block).sides, 0f);
-                note(b.x, b.y, radius, b.pos(), 0f);
-            });
+        // (looked for every 10 frames, not every frame: the search around the view reaches as far as the largest of
+        // them, and walked every building in that much)
+        long frame = Core.graphics.getFrameId();
+        if(frame - roundLook >= 10){
+            roundLook = frame;
+            round.clear();
+            float cx = view.x + view.width / 2f, cy = view.y + view.height / 2f, reach = Mathf.dst(view.width, view.height) / 2f + largestRound();
+            for(TeamData data : Vars.state.teams.present){
+                Vars.indexer.eachBlock(data.team, cx, cy, reach, b -> b instanceof BaseShield.BaseShieldBuild, b -> round.add((BaseShield.BaseShieldBuild)b));
+            }
+        }
+        for(int i = 0; i < round.size; i++){
+            var base = round.get(i);
+            float radius = base.radius();
+            if(!base.isValid() || base.broken || radius < 1f || !view.overlaps(base.x - radius, base.y - radius, radius * 2f, radius * 2f)) continue;
+            shape(((BaseShield)base.block).sides, 0f);
+            note(base.x, base.y, radius, base.pos(), 0f);
         }
         for(Unit unit : Groups.unit){
             if(unit.shield <= 0f || unit.abilities.length == 0) continue;

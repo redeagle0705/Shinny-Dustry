@@ -80,6 +80,7 @@ public class Factories{
     private static void welds(){
         boolean lit = Vars.state.rules.lighting && Vars.renderer.lights != null;
         float t = Time.time;
+        TextureRegion soft = Core.atlas.find("circle-shadow");
         for(UnitBuild b : builds){
             if(!b.isValid() || !working(b)) continue;
             float size = b.block.size * Vars.tilesize - 4f;
@@ -88,7 +89,6 @@ public class Factories{
             // where the game's sweeping line is (Drawf.construct), and the spot sliding up and down it
             float lx = b.x + Mathf.sin(b.time, 20f, size / 2f);
             float ly = b.y + Mathf.sin(b.time * 0.37f + b.id, 9f, size * 0.32f);
-            TextureRegion soft = Core.atlas.find("circle-shadow");
             // the glow inside the factory
             c.set(Pal.accent).a(0.16f * s);
             Draw.color(c);

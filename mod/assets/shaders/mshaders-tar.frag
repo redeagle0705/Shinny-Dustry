@@ -55,7 +55,9 @@ void main(){
     float beat = t / (3.0 + 3.0 * hash1(id + 3.7)) + hash1(id);
     float rnd = floor(beat), ph = fract(beat);
     if(hash1(id + rnd * 1.37) < 0.22){
-        vec2 at = vec2(hash1(id + rnd * 0.71 + 1.1), hash1(id - rnd * 0.53 + 2.3)) * 0.5 + 0.25;
+        // near the middle of its cell, so that the bubble and the ring it leaves stay inside it (only the pixels of its
+        // own cell draw it: placed near the edge, the ring was cut off straight)
+        vec2 at = vec2(hash1(id + rnd * 0.71 + 1.1), hash1(id - rnd * 0.53 + 2.3)) * 0.1 + 0.45;
         vec2 to = (f - at) * 14.0;
         float d = length(to);
         float grow = smoothstep(0.0, 0.85, ph);
@@ -70,7 +72,7 @@ void main(){
         }else{
             // popped: a ring that runs out and fades
             float k = (ph - 0.88) / 0.12;
-            float ring = 1.0 - smoothstep(0.0, 0.5, abs(d - (r + k * 3.0)));
+            float ring = 1.0 - smoothstep(0.0, 0.5, abs(d - (r + k * 2.5)));
             col += ring * (1.0 - k) * 0.08;
         }
     }

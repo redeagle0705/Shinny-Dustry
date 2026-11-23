@@ -28,7 +28,7 @@ public class Beams{
     private static int next;
     private static final float life = 300f;
     private static final Color c = new Color();
-    private static final Rect view = new Rect();
+    private static final Rect view = new Rect(), camera = new Rect();
 
     public static void init(){
         Events.run(Trigger.draw, Beams::draw);
@@ -75,6 +75,7 @@ public class Beams{
     private static void draw(){
         if(!on() || Vars.state.isMenu()) return;
         Core.camera.bounds(view);
+        camera.set(view);
         view.grow(400f);
         boolean paused = Vars.state.isPaused();
         for(Bullet b : Groups.bullet){
@@ -89,7 +90,7 @@ public class Beams{
                 strength = fout;
                 width = laser.width;
             }else if(type instanceof ContinuousFlameBulletType flame){
-                float len = Damage.findLength(b, flame.length * b.fslope(), flame.laserAbsorb, flame.pierceCap);
+                float len = Damage.findLength(b, flame.currentLength(b), flame.laserAbsorb, flame.pierceCap);
                 x2 = b.x + Angles.trnsx(b.rotation(), len);
                 y2 = b.y + Angles.trnsy(b.rotation(), len);
                 strength = Mathf.clamp(b.fslope() * 2f);
@@ -115,12 +116,13 @@ public class Beams{
             if(strength <= 0.01f) continue;
             // the burns of a continuous beam, now and then
             if(!(type instanceof LaserBulletType) && !paused && Mathf.chanceDelta(0.45f * strength)) burns(b, x2, y2, Math.max(width * 0.8f, 5f), 1);
-            // the air along it shimmers
-            float len = Mathf.dst(b.x, b.y, x2, y2);
+            // the air along it shimmers (only where that shows: points off screen took the places of those on it)
+            float len = Mathf.dst(b.x, b.y, x2, y2), reach = 9f + width * 0.8f;
             int n = Math.min((int)(len / 18f) + 1, 10);
             for(int i = 0; i <= n; i++){
                 float t = n == 0 ? 1f : i / (float)n;
-                HeatHaze.extra(Mathf.lerp(b.x, x2, t), Mathf.lerp(b.y, y2, t), 9f + width * 0.8f, 0.85f * strength);
+                float px = Mathf.lerp(b.x, x2, t), py = Mathf.lerp(b.y, y2, t);
+                if(camera.overlaps(px - reach, py - reach, reach * 2f, reach * 2f)) HeatHaze.extra(px, py, reach, 0.85f * strength);
             }
         }
         drawEmbers();

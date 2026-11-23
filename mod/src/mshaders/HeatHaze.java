@@ -94,6 +94,10 @@ public class HeatHaze{
     /** For the last step of the frame: u_heats (x, y, reach, how hot), u_heat (strength). */
     static void apply(Shader s){
         float strength = Vars.state.isGame() && on() ? ShaderMod.percent(ShaderMod.heatStrength, 100) : 0f;
+        // Far out the shimmer moves the picture by less than a pixel: it cannot be seen, and nothing is worked out
+        // (on a large base zoomed out it was a millisecond a frame for nothing).
+        float px = Core.camera.width / Math.max(Core.graphics.getWidth(), 1);
+        strength *= 1f - Mathf.clamp((px - 0.6f) / 0.4f);
         count = 0;
         if(strength > 0f){
             Core.camera.bounds(view);
@@ -108,7 +112,12 @@ public class HeatHaze{
             }
             // the hottest (by heat and size) of them in view; beams first (they are brief and bright)
             found.clear();
-            for(int i = 0; i < extras.size; i += 4) found.add(extras.items[i], extras.items[i + 1], extras.items[i + 2], extras.items[i + 3] * 4f);
+            // (only those that reach into view: points of beams just off screen took every slot from what is on it)
+            for(int i = 0; i < extras.size; i += 4){
+                float ex = extras.items[i], ey = extras.items[i + 1], er = extras.items[i + 2];
+                if(!view.overlaps(ex - er, ey - er, er * 2f, er * 2f)) continue;
+                found.add(ex, ey, er, extras.items[i + 3] * 4f);
+            }
             for(int i = 0; i < hot.size; i++){
                 Building b = hot.get(i);
                 if(!b.isValid()) continue;
@@ -140,7 +149,8 @@ public class HeatHaze{
         }
         extras.clear();
         for(int i = count * 4; i < uniforms.length; i++) uniforms[i] = 0f;
-        if(s.hasUniform("u_heat")) s.setUniformf("u_heat", strength);
+        // nothing hot in view: the shader skips the whole pass
+        if(s.hasUniform("u_heat")) s.setUniformf("u_heat", count > 0 ? strength : 0f);
         if(s.hasUniform("u_heats[0]") || s.hasUniform("u_heats")) s.setUniform4fv("u_heats", uniforms, 0, kept * 4);
     }
 }

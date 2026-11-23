@@ -49,9 +49,36 @@ public class Cutaway{
         return input != null && (input.block != null || !input.selectPlans.isEmpty());
     }
 
+    /** The frame the cut-away was set up in, and its circle in world units (for the units' shading pass, Scene). */
+    private static long activeFrame = -1;
+    private static float worldX, worldY, worldR;
+
+    /** Whether units drawn at this layer are cut away in this frame. */
+    static boolean covers(float layer){
+        if(activeFrame != Core.graphics.getFrameId() || shader == null) return false;
+        return (layer >= Layer.legUnit - 1.5f && layer < Layer.legUnit + 0.9f)
+            || (layer >= Layer.flyingUnitLow - 0.5f && layer < Layer.flyingUnitLow + 0.9f)
+            || (layer >= Layer.flyingUnit - 0.5f && layer < Layer.flyingUnit + 0.9f);
+    }
+
+    static Shader shader(){
+        return shader;
+    }
+
+    /** The middle of the circle, where nothing of the units is left (world units): x, y, radius. */
+    static float clearX(){ return worldX; }
+    static float clearY(){ return worldY; }
+    static float clearR(){
+        // dithered: clean to 45% of the radius; cut away: all of it; fade: nearly nothing left inside 35%
+        return worldR * (style == 2 ? 1f : style == 3 ? 0.35f : 0.45f);
+    }
+
     private static void draw(){
         style = Core.settings.getInt(ShaderMod.cutawayStyle, 1);
         if(style <= 0 || Vars.state.isMenu() || !placing()) return;
+        // (with the game's "pixelate" the units are drawn into a picture the size of the camera, not of the window:
+        // the circle in window pixels would be in the wrong place)
+        if(Vars.renderer.pixelate) return;
         var input = Vars.control.input;
         if(Float.isNaN(testX)) world.set(Core.input.mouseWorld());
         else world.set(testX, testY);
@@ -76,6 +103,10 @@ public class Cutaway{
         }
         worldRadius *= ShaderMod.percent(ShaderMod.cutawaySize, 100);
         radius = worldRadius / pxw;
+        activeFrame = Core.graphics.getFrameId();
+        worldX = world.x;
+        worldY = world.y;
+        worldR = worldRadius;
         cx = (world.x - Core.camera.position.x + Core.camera.width / 2f) / pxw;
         cy = (world.y - Core.camera.position.y + Core.camera.height / 2f) / pxw;
         // legged units, low flying units, flying units: each layer drawn through the shader

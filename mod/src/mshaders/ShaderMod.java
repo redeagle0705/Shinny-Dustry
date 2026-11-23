@@ -341,11 +341,11 @@ public class ShaderMod extends Mod{
     /** Direction towards the sun on the ground, as the setting says: 0 = right, 90 = up. One value for shadows, normal-map shading and ground relief. */
     // (with a time of day, the sun moves round the set angle: Daytime)
     static float sunX(){
-        return Mathf.cosDeg(Daytime.sunAngle(Core.settings.getInt(sunAngle, 45)));
+        return Daytime.sunX();
     }
 
     static float sunY(){
-        return Mathf.sinDeg(Daytime.sunAngle(Core.settings.getInt(sunAngle, 45)));
+        return Daytime.sunY();
     }
 
     /** How much daylight the map has: 1 on a bright map; on a dark one what its darkness leaves, but not less than 0.15. The sun counts by this much. */

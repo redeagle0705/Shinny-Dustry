@@ -27,6 +27,8 @@ import java.lang.reflect.*;
  * passed on untouched and the game lights the map as it always did.
  */
 public class LightTap extends LightRenderer{
+    /** While true, lights are not taken (an effect drawn a second time, as a smoke shadow: SmokeShadows). */
+    static boolean muted;
     /** floats per recorded light: x, y, radius, r, g, b, opacity, height above the ground (0 = on the ground) */
     public static final int stride = 8;
 
@@ -87,6 +89,7 @@ public class LightTap extends LightRenderer{
 
     @Override
     public void add(Runnable run){
+        if(muted) return;
         if(!gameLighting()) return;
         if(takeover) extras.add(run);
         else super.add(run);
@@ -448,6 +451,7 @@ public class LightTap extends LightRenderer{
 
     @Override
     public void add(float x, float y, float radius, Color color, float opacity){
+        if(muted) return;
         if(capture && color == Pal.reactorPurple){
             long frame = Core.graphics.getFrameId();
             if(frame != reactorFrame){
@@ -495,6 +499,7 @@ public class LightTap extends LightRenderer{
 
     @Override
     public void add(float x, float y, TextureRegion region, float rotation, Color color, float opacity){
+        if(muted) return;
         // sprite-shaped light. Without the lighting rule it is recorded as a circle about as large as the sprite
         // (4 texture pixels = 1 world unit); with it, the game's own drawing below is used (it ends up in add(Runnable)).
         if(!gameLighting()) record(x, y, Math.max(region.width * Draw.xscl, region.height * Draw.yscl) / 8f, color, opacity, 0f);
@@ -503,6 +508,7 @@ public class LightTap extends LightRenderer{
 
     @Override
     public void line(float x, float y, float x2, float y2, float stroke, Color tint, float alpha){
+        if(muted) return;
         tint = ownColor(tint);
         // The light of a laser sprite (Drawf.laser: sap lasers, repair and mining beams, tractor beams, the lines between
         // power nodes) is always the same: 30 wide, orange, 0.3 (Drawf.light(x, y, x2, y2)) - whatever colour the laser is

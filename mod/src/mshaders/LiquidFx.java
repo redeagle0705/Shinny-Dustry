@@ -45,7 +45,8 @@ public class LiquidFx{
     }
 
     private void sync(){
-        boolean on = Core.settings.getBool(ShaderMod.liquidsOn, true);
+        // (strength 0 = the game's own look: then the game's own, cheaper shaders, not ours with their work thrown away)
+        boolean on = Core.settings.getBool(ShaderMod.liquidsOn, true) && Core.settings.getInt(ShaderMod.liquidsStrength, 100) > 0;
         sync(slag, on);
         sync(tar, on);
         sync(cryo, on);

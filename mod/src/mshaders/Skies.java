@@ -102,12 +102,6 @@ public class Skies{
         return Core.settings.getBool(ShaderMod.weatherOn, true) ? ShaderMod.percent(ShaderMod.weatherStrength, 100) : 0f;
     }
 
-    /** How much rain shows on the ground now (for the ground's layer, FloorFx), the settings applied. */
-    static float rainNow(){
-        update();
-        return rain * strength();
-    }
-
     /** Sets the weather uniforms of the ground's layer. */
     static void applyGround(Shader s){
         update();
@@ -130,10 +124,5 @@ public class Skies{
         }
         if(s.hasUniform("u_solid")) s.setUniformi("u_solid", 5);
         if(s.hasUniform("u_hasSolid")) s.setUniformf("u_hasSolid", solid != null ? 1f : 0f);
-    }
-
-    static void apply(Shader s){
-        update();
-        if(s.hasUniform("u_rain")) s.setUniformf("u_rain", 0f);
     }
 }

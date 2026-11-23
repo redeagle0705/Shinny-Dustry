@@ -52,7 +52,10 @@ void main(){
     float m = noise(coords / 240.0 + vec2(t * 0.010, t * 0.004)) * noise(coords / 110.0 - vec2(t * 0.016, -t * 0.006));
     col = mix(col, vec3(0.90, 0.97, 1.0), smoothstep(0.22, 0.48, m) * 0.28);
     // frost along the shore: how much of the ring around this place is not cryofluid
-    if(color.a > 0.95){
+    // (first a cheap look four ways, 7 units out: deep in the pool there is no shore near, and the sixteen looks of
+    // the frost are not needed)
+    float nearShore = 4.0 - here(coords + vec2(7.0, 0.0)) - here(coords - vec2(7.0, 0.0)) - here(coords + vec2(0.0, 7.0)) - here(coords - vec2(0.0, 7.0));
+    if(color.a > 0.95 && nearShore > 0.5){
         float out1 = 0.0;
         for(int k = 0; k < 8; k++){
             float a = float(k) * 0.785398;

@@ -24,7 +24,6 @@ public class SmokeShadows{
     /** Copies of the effects' containers for the deferred shadow draw (the game reuses its own). */
     private static final Seq<EffectContainer> pool = new Seq<>(), used = new Seq<>();
     private static long frame = -1;
-    private static final Color was = new Color();
 
     public static int install(){
         try{
@@ -65,33 +64,57 @@ public class SmokeShadows{
         return wrapped;
     }
 
+    /** The shadows of this frame: copies of the effects' containers, and their drawings; drawn together at once. */
+    private static final Seq<Cons<EffectContainer>> drawings = new Seq<>();
+    private static boolean frameOn;
+    private static float frameAlpha;
+    private static final Runnable drawAll = SmokeShadows::drawAll;
+
     private static void shadow(EffectContainer e, Cons<EffectContainer> draw){
-        if(!Core.settings.getBool(ShaderMod.smokeShadowsOn, true) || Vars.state.isMenu()) return;
-        float strength = ShaderMod.percent(ShaderMod.smokeShadowsStrength, 100) * ShaderMod.daylight();
-        if(strength <= 0.01f) return;
         long now = Core.graphics.getFrameId();
         if(now != frame){
+            // once a frame: the settings, and the copies of the last frame back to the pool
             frame = now;
             pool.addAll(used);
             used.clear();
+            drawings.clear();
+            float strength = Core.settings.getBool(ShaderMod.smokeShadowsOn, true) && !Vars.state.isMenu()
+                ? ShaderMod.percent(ShaderMod.smokeShadowsStrength, 100) * ShaderMod.daylight() : 0f;
+            frameOn = strength > 0.01f;
+            // light: many puffs of one cloud lie over each other
+            frameAlpha = 0.09f * strength;
         }
+        if(!frameOn) return;
         // how high the smoke is: a little at first, more as it rises
         float height = 4f + 10f * e.fin();
         EffectContainer c = pool.isEmpty() ? new EffectContainer() : pool.pop();
         c.set(e.id, e.color, e.time, e.lifetime, e.rotation, e.x - ShaderMod.sunX() * height, e.y - ShaderMod.sunY() * height, e.data);
         used.add(c);
-        // light: many puffs of one cloud lie over each other
-        float a = 0.09f * strength;
-        // (Draw.draw leaves the layer at its own: put back the effect's, or the smoke itself went under the blocks)
-        float z = Draw.z();
-        Draw.draw(Layer.blockUnder + 0.1f, () -> {
-            alpha = a;
-            Draw.shader(shader);
-            was.set(Draw.getColor());
-            draw.get(c);
-            Draw.shader();
-            Draw.color(was);
-        });
-        Draw.z(z);
+        drawings.add(draw);
+        if(drawings.size == 1){
+            // all of the frame's shadows in one go, with one switch of shader (at first one switch, one flush of the
+            // batch and a new task per puff). (Draw.draw leaves the layer at its own: put back the effect's, or the
+            // smoke itself went under the blocks.)
+            float z = Draw.z();
+            Draw.draw(Layer.blockUnder + 0.1f, drawAll);
+            Draw.z(z);
+        }
+    }
+
+    private static void drawAll(){
+        alpha = frameAlpha;
+        Draw.shader(shader);
+        // (drawn again, an effect would add its lights again, a little off - missile trails, the smoke of titans)
+        LightTap.muted = true;
+        try{
+            for(int i = 0; i < drawings.size && i < used.size; i++){
+                Draw.reset();
+                drawings.get(i).get(used.get(i));
+            }
+        }finally{
+            LightTap.muted = false;
+        }
+        Draw.shader();
+        Draw.reset();
     }
 }
