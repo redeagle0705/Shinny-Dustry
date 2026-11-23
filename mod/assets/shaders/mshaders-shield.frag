@@ -24,7 +24,8 @@ uniform sampler2D u_backdrop;   // the world right before the shields (half size
 uniform float u_refract;    // 0 = none
 uniform float u_sheen;      // 0 = the game's stripes; above 0: waves of light now and then instead, this strong
 uniform float u_crack;      // how strongly cracks show, 0 = none
-uniform float u_hurt[8];    // how much of each shield in u_shields is used up, 0 = whole .. 1 = about to break
+uniform float u_hurt[8];
+uniform float u_pxw;        // world units per screen pixel (large when zoomed far out)    // how much of each shield in u_shields is used up, 0 = whole .. 1 = about to break
 uniform vec2 u_sides[8];    // the shape of each shield in u_shields: how many sides, the angle of its first corner (degrees)
 uniform vec4 u_shields[8];  // the shields in view: x, y, radius in world units, a number of their own 1 .. 2 (0 = not in use)
 uniform vec4 u_starts[8];   // shields that have just come on: x, y in world units, age in ticks, full radius (0 = not in use)
@@ -235,6 +236,7 @@ void main(){
     float alpha = ALPHA;
     vec3 rgb = color.rgb;
     float rimNow = 0.0;     // how near the edge (bubble), for the hexagons and the refraction
+    float thinNow = 0.0;    // 1 where the shield is thin (the edge near on both sides)
     vec2 rimWay = vec2(0.0);
     if(u_bubble > 0.001){
         // How near the edge this point is: looked for along eight ways at six distances, each ring of eight turned a
@@ -269,6 +271,22 @@ void main(){
         }
         near *= u_bubble;
         float rim = near * near * (3.0 - 2.0 * near);
+        // A thin shield (the shield of a shielded wall, one tile across) is rim all through: it was filled thick and
+        // bright and hid the wall under it ("the shield is so short the effect covers the block"). Where the edge is
+        // near on both sides, the rim is taken back.
+        if(!deep){
+            float thin = 0.0;
+            for(int j = 0; j < 4; j++){
+                float a = float(j) * 0.7854;
+                vec2 d = vec2(cos(a), sin(a));
+                for(int k = 0; k < 2; k++){
+                    float r = 5.0 + float(k) * 5.0;
+                    thin = max(thin, (1.0 - on(T + d * r * v)) * (1.0 - on(T - d * r * v)) * (1.0 - float(k) * 0.4));
+                }
+            }
+            rim *= 1.0 - 0.85 * thin;
+            thinNow = thin;
+        }
 
         // see-through in the middle, thick at the rim
         alpha = mix(ALPHA, 0.10, min(u_bubble, 1.0)) + 0.40 * rim;
@@ -338,7 +356,7 @@ void main(){
         vec2 pc = coords + push * 0.9;
         float edge = hexLine(pc, 5.2);
         float line = 1.0 - smoothstep(0.02, 0.07, edge);
-        float show = (0.30 + 0.35 * rimNow + 1.6 * ring + 1.2 * flash + 0.9 * sheen) * u_hex;
+        float show = (0.30 + 0.35 * rimNow + 1.6 * ring + 1.2 * flash + 0.9 * sheen) * u_hex * (1.0 - 0.7 * thinNow);
         rgb = mix(rgb, rgb * 1.5 + 0.12, clamp(line * show, 0.0, 1.0));
         alpha += line * show * 0.16;
 
@@ -372,12 +390,19 @@ void main(){
         float grow = clamp((used - 0.3) / 0.65, 0.0, 1.0);
         vec2 big = crackCells(local / 16.0, seed);
         float bigOn = step(big.y, grow * 1.15);
-        float bigLine = (1.0 - smoothstep(0.015, 0.05, big.x)) * bigOn;
-        float bigSeam = (1.0 - smoothstep(0.05, 0.13, big.x)) * bigOn - bigLine;
+        // The lines are never thinner than about a screen pixel and a half: zoomed out, a crack a fraction of a world
+        // unit wide fell between the pixels and the cracking could not be seen from afar ("make it show further out").
+        float px = max(u_pxw, 0.0);
+        float bw = max(0.015, px * 0.75 / 16.0), bs = max(0.13, px * 2.4 / 16.0);
+        float bigLine = (1.0 - smoothstep(bw, bw * 3.3, big.x)) * bigOn;
+        float bigSeam = (1.0 - smoothstep(bw * 3.3, bs, big.x)) * bigOn - bigLine;
         float fineLine = 0.0;
-        if(used > 0.66){
+        // (the fine cracks are left out when their cells would be only a few pixels across: they would be a grey blur)
+        float fineShow = 1.0 - smoothstep(0.9, 1.6, px);
+        if(used > 0.66 && fineShow > 0.0){
             vec2 fine = crackCells(local / 6.5 + 0.25 * sin(local.yx / 9.0), seed + 0.5);
-            fineLine = (1.0 - smoothstep(0.02, 0.07, fine.x)) * step(fine.y, (used - 0.66) / 0.3) * 0.7;
+            float fw = max(0.02, px * 0.6 / 6.5);
+            fineLine = (1.0 - smoothstep(fw, fw * 3.5, fine.x)) * step(fine.y, (used - 0.66) / 0.3) * 0.7 * fineShow;
         }
         float crack = clamp(max(bigLine, fineLine) * u_crack, 0.0, 1.0);
         rgb = mix(rgb * (1.0 - 0.35 * clamp(bigSeam * u_crack, 0.0, 1.0)), vec3(1.0), crack * 0.85);

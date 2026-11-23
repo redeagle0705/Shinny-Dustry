@@ -489,6 +489,17 @@ public class Scene{
         occluders.init();
         surfaces.init();
 
+        // The block pictures (Occluders) are brought up to date - the blocks placed, built or broken since the last
+        // frame uploaded - here, before anything is drawn. An upload binds the picture to the active texture unit;
+        // done by whichever effect first asked for it in the middle of the frame, it could land on unit 0 in place of
+        // the picture that effect was drawing, and for that frame the map of blocks was stretched over the whole
+        // screen: red bars and a red wash flashing while building ("the whole screen sparkles when I place").
+        Events.run(Trigger.preDraw, () -> {
+            if(Vars.state.isGame()){
+                Gl.activeTexture(Gl.texture0);
+                occluders.texture();
+            }
+        });
         Events.run(Trigger.preDraw, this::begin);
         Events.run(Trigger.draw, this::queue);
         Events.run(Trigger.postDraw, Clock.timed("end", this::end));
@@ -1462,6 +1473,9 @@ public class Scene{
         setCamera(s);
         Blasts.apply(s);
         Pulses.apply(s);
+        Skies.apply(s);
+        HeatHaze.apply(s);
+        Daytime.apply(s);
         if(lightReady){
             (lightmapNow != null ? lightmapNow : light).getTexture().bind(1);
             set(s, "u_lightmap", 1);

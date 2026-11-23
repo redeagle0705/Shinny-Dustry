@@ -39,6 +39,8 @@ uniform float u_vignette;      // 0 = none, 1 = corners fully dark
 uniform float u_saturation;    // 1 = unchanged
 uniform float u_contrast;      // 1 = unchanged
 uniform float u_warmth;        // 0 = unchanged, + warmer, - cooler
+uniform vec4 u_sky;            // the light of the time of day (Daytime.java): the picture is multiplied by rgb, a = how much
+uniform vec2 u_night;          // night: x = how much (0 = day), y = how bright the moonlit world is (1 = as by day)
 uniform vec4 u_waves[16];      // waves of menders: x, y in world units, how far along (0 .. 1), range (0 = not in use)
 uniform vec4 u_waveColors[16];
 uniform vec4 u_shapes4[24];    // the places of the menders of up to four groups whose waves run: 12 points a slot, two to a vec4
@@ -48,6 +50,11 @@ uniform vec4 u_hazes[8];       // overdrive projectors at work: x, y, range, how
 uniform vec4 u_hazeColors[8];
 uniform float u_haze;          // strength of their shimmer and glow, 0 = none
 uniform vec4 u_blasts[16];     // explosions of late: x, y in world units, age in ticks, how far the wave runs (0 = not in use)
+uniform float u_rain;          // how much rain there is, 0 = none
+uniform vec4 u_heats[24];      // hot things in view: x, y in world units, how far the haze reaches, how hot (0 .. 1); reach 0 = not in use
+uniform float u_heat;          // strength of the heat haze, 0 = none
+uniform sampler2D u_kinds;     // the kind of dry ground of each tile (FloorFx): upper 3 bits of red, 0 = none of them
+uniform vec2 u_tiles;          // the map in tiles; 0 = no such picture
 uniform float u_shock;         // strength of the shock waves, 0 = none
 uniform float u_flash;         // strength of the flashes of explosions, 0 = none
 uniform float u_spare;         // 0 = every colour gets the saturation and contrast above, 1 = colours that are vivid already are spared (set on Erekir only)
@@ -67,7 +74,11 @@ float lumaAt(vec2 uv){
 
 // Smooth noise for the clouds (value noise on a grid of one unit, eased between).
 float cloudHash(vec2 p){
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+    // (no sine: with sine, far from the map's origin the graphics card's precision ran out and the noise broke into
+    // straight-edged blocks - seen as straight cuts through rain puddles)
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
 }
 
 float cloudNoise(vec2 p){
@@ -132,6 +143,29 @@ vec2 blastWarp(vec2 uv, vec2 world, out float lit){
     }
     lit = min(lit, 1.0) * u_shock;
     return uv - push * u_shock / u_resolution;
+}
+
+// Heat haze: the air over hot things (smelters, generators, reactors, turrets that have just fired; HeatHaze.java)
+// shimmers - the picture is read from a little aside, by fine waves that run up through it fast. The haze reaches a
+// little further up than down (the warm air rises).
+vec2 heatWarp(vec2 uv, vec2 world){
+    vec2 push = vec2(0.0);
+    float t = u_time;
+    for(int i = 0; i < 24; i++){
+        vec4 h = u_heats[i];
+        if(h.z < 0.5) continue;
+        // most of it in the air above the hot thing, less over the thing itself (at first it bent the block like
+        // jelly)
+        vec2 to = world - h.xy - vec2(0.0, h.z * 0.45);
+        to.y *= 0.8;
+        float d = length(to) / (h.z * 1.1);
+        if(d >= 1.0) continue;
+        float inside = (1.0 - smoothstep(0.15, 1.0, d)) * h.w;
+        vec2 p = world / 2.4;
+        push += vec2(sin(p.y * 1.7 - t * 8.0 + sin(p.x * 0.9 + t * 2.3)),
+                     0.5 * cos(p.x * 1.5 - t * 6.3 + sin(p.y * 1.1 - t * 3.1))) * inside;
+    }
+    return uv + push * 0.2 * u_heat / u_resolution;
 }
 
 // How strongly the flashes of explosions light this place (the same life and reach as in Blasts.flashes).
@@ -227,11 +261,88 @@ vec2 waveWarp(vec2 uv, vec2 world){
     return uv - push * u_pulse / u_resolution;
 }
 
+// The kind of dry ground of the tile at that place (FloorFx kinds), 0 = none of them.
+float kindAt(vec2 world){
+    return floor(floor(texture2D(u_kinds, (world + 4.0) / (8.0 * u_tiles)).r * 255.0 + 0.5) / 32.0 + 0.01);
+}
+
+// 1 where a tile takes puddles (dry ground other than snow and hot rock), 0 where not.
+float puddleGround(float kind){
+    return kind > 0.5 && kind < 5.5 && (kind < 2.5 || kind > 3.5) || kind > 6.5 ? 1.0 : 0.0;
+}
+
+// Rain on the ground: wet darkening, puddles in the hollows (where a slow noise is high), and in them rings where drops
+// fall. "onBlock": how much of this place is a block (blocks get only the wet sheen, no puddles).
+vec3 rainOn(vec3 color, vec2 world, float onBlock){
+    float r = u_rain;
+    // Only dry ground gets wet and gathers puddles - not water, deep water, tar or other liquids, which are wet
+    // already ("puddles don't suit places with water already"). The kinds of dry ground: rock, sand, salt, grass,
+    // metal floors; snow gets wet but no puddles; hot rock neither.
+    float kind = 0.0;
+    if(u_tiles.x > 0.5) kind = kindAt(world);
+    bool dry = kind > 0.5 && (kind < 5.5 || kind > 6.5);
+    if(onBlock < 0.5 && !dry) return color;
+    // How far into ground that takes puddles: the four tiles around, blended - so a puddle thins out towards the
+    // water's edge instead of being cut off along the tiles ("this looks unnatural")
+    float room = 0.0;
+    if(u_tiles.x > 0.5){
+        vec2 t = (world + 4.0) / 8.0 - 0.5, base = floor(t), f = fract(t);
+        float a = 0.0, b = puddleGround(kindAt((base + vec2(1.0, 0.0)) * 8.0)),
+            c = puddleGround(kindAt((base + vec2(0.0, 1.0)) * 8.0)), d = puddleGround(kindAt((base + vec2(1.0, 1.0)) * 8.0));
+        a = puddleGround(kindAt(base * 8.0));
+        f = f * f * (3.0 - 2.0 * f);
+        room = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+    }
+    bool puddles = room > 0.01;
+    // wet: a little darker and more saturated
+    float g = luma(color);
+    color = mix(color, mix(vec3(g), color, 1.12) * 0.86, r * (1.0 - 0.5 * onBlock));
+    if(onBlock > 0.5){
+        // blocks: a faint sheen on the sides turned to the sun
+        return color + r * 0.03;
+    }
+    if(!puddles) return color;
+    // (three layers turned against each other: one layer alone showed the square grid of the noise at the edges)
+    vec2 p = world / 40.0;
+    vec2 q = vec2(p.x * 0.8 - p.y * 0.6, p.x * 0.6 + p.y * 0.8);
+    vec2 w = vec2(q.x * 0.8 - q.y * 0.6, q.x * 0.6 + q.y * 0.8);
+    float n = cloudNoise(p) * 0.5 + cloudNoise(q * 2.3 + 3.1) * 0.32 + cloudNoise(w * 5.1 + 7.7) * 0.18;
+    // (where the ground takes fewer puddles, the noise must be higher: the puddle shrinks away from the edge)
+    float puddle = smoothstep(0.60 - 0.06 * r + (1.0 - room) * 0.3, 0.68 - 0.06 * r + (1.0 - room) * 0.3, n) * r;
+    if(puddle <= 0.001) return color;
+    // a puddle: darker, cooler, with the sky in it
+    vec3 sky = vec3(0.55, 0.62, 0.72);
+    // (the sky in it as bright as the ground around: added evenly, it lit up the shadows that fall on a puddle and
+    // their edges showed as straight cuts through it)
+    color = mix(color, color * 0.5 + sky * 0.2 * clamp(luma(color) * 2.2, 0.0, 1.0), puddle * 0.7);
+    // the rim of a puddle catches the light
+    float rim = smoothstep(0.0, 0.25, puddle) * (1.0 - smoothstep(0.25, 0.7, puddle));
+    color += vec3(0.8, 0.85, 0.9) * rim * 0.05;
+    // rings where drops fall: one drop now and then in each cell of 9 world units
+    vec2 cellP = world / 9.0, id = floor(cellP), f = fract(cellP);
+    float ring = 0.0;
+    for(int j = -1; j <= 0; j++){
+        for(int i = -1; i <= 0; i++){
+            vec2 c = id + vec2(float(i), float(j));
+            float h = cloudHash(c), h2 = cloudHash(c + 17.3);
+            float phase = fract(u_time * (0.9 + 0.6 * h2) + h);
+            vec2 at = vec2(float(i), float(j)) + vec2(h, h2) * 0.8 + 0.1;
+            float d = length(f - at) * 9.0;
+            float rad = phase * 3.5;
+            float x = (d - rad) / 0.45;
+            ring += exp(-x * x) * (1.0 - phase) * step(cloudHash(c + floor(u_time * (0.9 + 0.6 * h2) + h)), 0.55 + 0.4 * r);
+        }
+    }
+    color += vec3(0.75, 0.82, 0.9) * min(ring, 1.0) * 0.22 * puddle;
+    return color;
+}
+
 void main(){
     vec2 uv = v_texCoords;
     if(u_pulse > 0.001) uv = waveWarp(uv, uv * u_resolution + u_campos);
     vec3 hazeWarm = vec3(0.0);
     if(u_haze > 0.001) uv = overdriveHaze(uv, uv * u_resolution + u_campos, hazeWarm);
+    if(u_heat > 0.001) uv = heatWarp(uv, uv * u_resolution + u_campos);
     float shockLit = 0.0;
     if(u_shock > 0.001) uv = blastWarp(uv, uv * u_resolution + u_campos, shockLit);
     vec3 color = texture2D(u_texture, uv).rgb;
@@ -343,6 +454,25 @@ void main(){
         color = (color - 0.5) * u_contrast + 0.5;
     }
     color *= vec3(1.0 + 0.10 * u_warmth, 1.0 + 0.02 * u_warmth, 1.0 - 0.10 * u_warmth);
+    if(u_sky.a > 0.001) color *= max(mix(vec3(1.0), u_sky.rgb, u_sky.a), 0.0);
+    if(u_night.x > 0.001){
+        // By moonlight: little colour, cool, darker - but where a lamp or a lit building lights the ground, the
+        // world keeps its own warm colour and brightness (the light map: the lights of the frame, blocks keeping it off)
+        // the light that falls here, in its own colour (it is added to the moonlit world: a pool of light that fades
+        // out, not a hole of daylight - at first it gave back the whole day inside a sharp circle)
+        vec3 lamp = vec3(0.0);
+        if(u_light > 0.001) lamp = vec3(1.0) - exp(-texture2D(u_lightmap, uv).rgb * 1.4);
+        float g = luma(color);
+        vec3 moon = mix(vec3(g), color, 0.40) * vec3(0.62, 0.74, 1.0) * u_night.y;
+        // the brightest things (glowing parts, fire, molten slag) keep some of their colour: they shine on their own
+        // (bright and strongly coloured: not pale sand or snow, which only reflect)
+        float hi = max(color.r, max(color.g, color.b)), lo = min(color.r, min(color.g, color.b));
+        float glow = smoothstep(0.75, 0.95, hi) * smoothstep(0.50, 0.75, hi - lo);
+        moon = mix(moon, color * 0.85, glow * 0.6);
+        // (a little less colour in what the light falls on: cold light on grass came out neon green)
+        vec3 night = moon + mix(vec3(g), color, 0.7) * lamp * 1.0;
+        color = mix(color, min(night, max(color, moon)), clamp(u_night.x, 0.0, 1.0));
+    }
 
     // oval vignette: 0 in the middle, 1 in the corners
     float d = length(uv - 0.5) * 1.4142;

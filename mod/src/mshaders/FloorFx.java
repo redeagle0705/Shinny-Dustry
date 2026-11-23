@@ -69,6 +69,8 @@ public class FloorFx{
             "metal-tiles-8", "metal-tiles-9", "metal-tiles-10", "metal-tiles-11", "metal-tiles-12", "metal-tiles-13"),
     };
 
+    /** The one in use (for the weather on the ground, which needs to know what floor is where). */
+    static FloorFx current;
     private ShaderLayer layer;
     private boolean ready;
     /** The kind of each floor, by the floor's id; 0 = none. */
@@ -95,6 +97,7 @@ public class FloorFx{
     }
 
     public void init(){
+        current = this;
         try{
             layer = new ShaderLayer(new GroundShader(this, ShaderMod.source("mshaders-ground.frag")), false){
                 // timed for the developer option "time of each step": the floor tiles of these kinds and the shader over them
@@ -278,6 +281,7 @@ public class FloorFx{
             if(hasUniform("u_px")) setUniformf("u_px", Core.camera.width / Math.max(Core.graphics.getWidth(), 1));
             if(hasUniform("u_relief")) setUniformf("u_relief", ShaderMod.percent(ShaderMod.floorRelief, 100));
             if(hasUniform("u_sunDir")) setUniformf("u_sunDir", ShaderMod.sunX(), ShaderMod.sunY());
+            Skies.applyGround(this);
         }
     }
 }

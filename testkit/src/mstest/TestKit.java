@@ -19,6 +19,7 @@ import mindustry.graphics.CacheLayer.*;
 import mindustry.maps.Map;
 import mindustry.mod.*;
 import mindustry.ui.dialogs.*;
+import mindustry.world.*;
 
 import java.lang.reflect.*;
 
@@ -136,6 +137,21 @@ public class TestKit extends Mod{
     boolean shieldHold = true;
     /** pulses=true: where the mend projector stands (for wave=). */
     float pulseX, pulseY;
+    /** place=: hold the mouse cursor on the middle of the window. */
+    boolean holdCursor;
+    /** churn=true: a wall is put down and taken away again every frame, beside the camera (the block picture is uploaded every frame). */
+    boolean churn;
+    /** construct=true: the player's unit is given walls to build one after another beside the camera (real construction, with its beam). */
+    boolean construct;
+    /** hot=true: every crafter is held fully warmed up and every turret at full barrel heat (for the heat haze). */
+    boolean hot;
+    /** smoke=true: smoke puffs and clouds rise beside the middle of the view, a few every frame. */
+    boolean smoke;
+    /** beams=true: a meltdown's beam sweeping slowly over the ground left of the middle, and a lancer firing every second right of it. */
+    boolean beams;
+    mindustry.gen.Bullet sweep;
+    boolean beamWalls;
+    int constructAt;
     /** statuses=a+b+c (after crowd=): the units of the row get those status effects, one each in turn, held. */
     String[] statusRow;
     /** barrage=N: keep about N shots in the air over the view, fired across it from its edges. */
@@ -161,6 +177,7 @@ public class TestKit extends Mod{
     byte[] lastFrame;
     int flickerFrames;
     float flickerMean, flickerMax;
+    final StringBuilder flickerLumas = new StringBuilder();
     float[] lampPos, unitPos, hoverPos;
     float holdTime = -1f;
     boolean holdSide;
@@ -227,6 +244,57 @@ public class TestKit extends Mod{
             Vars.control.playMap(map, rules);
             Events.run(Trigger.preDraw, () -> {
                 if(camSet) Core.camera.position.set(camX, camY);
+                if(construct && Vars.player.unit() != null && !Vars.player.unit().activelyBuilding()){
+                    int tx = (int)(Core.camera.position.x / 8f) + 3 + (constructAt % 6), ty = (int)(Core.camera.position.y / 8f) + 3 + (constructAt / 6) % 3;
+                    constructAt++;
+                    Vars.player.unit().addBuild(new mindustry.entities.units.BuildPlan(tx, ty, 0, Blocks.copperWall));
+                }
+                if(beams && !beamWalls){
+                    // a row of walls across the meltdown's sweep and the lancer's line, where the camera is now
+                    beamWalls = true;
+                    // (enemy walls, or the beams pass through them; nearly unbreakable, or the meltdown cuts them away at once)
+                    Vars.state.rules.teams.get(mindustry.game.Team.crux).blockHealthMultiplier = 100000f;
+                    int cx = (int)(Core.camera.position.x / Vars.tilesize), cy = (int)(Core.camera.position.y / Vars.tilesize);
+                    for(int dx = -16; dx <= 16; dx++){
+                        var t = Vars.world.tile(cx + dx, cy + 3);
+                        if(t != null && t.build == null && !t.floor().isDeep()){
+                            if(t.block() != Blocks.air) t.setAir();
+                            t.setBlock(Blocks.titaniumWall, mindustry.game.Team.crux, 0);
+                        }
+                    }
+                }
+                if(beams && !Vars.state.isPaused()){
+                    var team = Vars.player.team();
+                    var melt = ((mindustry.world.blocks.defense.turrets.LaserTurret)Blocks.meltdown).shootType;
+                    float ang = -90f + Mathf.sin((float)(mindustry.Vars.state.tick / 60.0), 3f, 35f);
+                    if(sweep == null || !sweep.isAdded() || sweep.type != melt) sweep = melt.create(null, team, Core.camera.position.x - 60f, Core.camera.position.y + 70f, ang);
+                    sweep.time = Math.min(sweep.time, 10f);
+                    sweep.rotation(ang);
+                    if(mindustry.Vars.state.tick % 60 < 1){
+                        var lancer = ((mindustry.world.blocks.defense.turrets.PowerTurret)Blocks.lancer).shootType;
+                        lancer.create(null, team, Core.camera.position.x + 40f, Core.camera.position.y + 70f, -100f);
+                    }
+                }
+                if(smoke && Core.graphics.getFrameId() % 6 == 0){
+                    float sx = camX - 40f, sy = camY + 10f;
+                    Fx.smokeCloud.at(sx + Mathf.range(14f), sy + Mathf.range(14f));
+                    Fx.smoke.at(sx + 60f + Mathf.range(8f), sy + Mathf.range(8f));
+                    Fx.shootBigSmoke.at(sx + 110f, sy - 20f, 90f);
+                    Fx.smeltsmoke.at(sx + 20f + Mathf.range(6f), sy - 50f + Mathf.range(6f));
+                }
+                if(hot){
+                    for(mindustry.gen.Building b : mindustry.gen.Groups.build){
+                        if(b instanceof mindustry.world.blocks.production.GenericCrafter.GenericCrafterBuild c) c.warmup = 1f;
+                        if(b instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild tb) tb.heat = 1f;
+                    }
+                }
+                if(churn){
+                    Tile t = Vars.world.tileWorld(Core.camera.position.x + 24f, Core.camera.position.y + 24f);
+                    if(t != null){
+                        if(t.build != null) t.remove();
+                        else t.setNet(Blocks.copperWall, Vars.player.team(), 0);
+                    }
+                }
                 if(!Float.isNaN(landing)){
                     var core = Vars.player.team().core();
                     // the game counts the landing down from its full time; held at the same moment every frame
@@ -274,6 +342,7 @@ public class TestKit extends Mod{
                     }
                 }
                 if(!Float.isNaN(shieldX)) holdShields();
+
                 if(barrage > 0){
                     var shotType = UnitTypes.dagger.weapons.first().bullet;
                     int missing = Math.min(barrage - mindustry.gen.Groups.bullet.size(), 200);
@@ -377,11 +446,19 @@ public class TestKit extends Mod{
                 flickerMean = Math.max(flickerMean, sum / (float)(px.length / 4 * 3));
                 flickerMax = Math.max(flickerMax, big / (float)(px.length / 4));
             }
+            {
+                // each frame's mean brightness: a whole-screen flash shows as one frame far off the others
+                long all = 0;
+                for(int i = 0; i < px.length; i += 4) all += (px[i] & 0xff) + (px[i + 1] & 0xff) + (px[i + 2] & 0xff);
+                flickerLumas.append(flickerFrames == 0 ? "" : " ").append(Strings.fixed(all / (float)(px.length / 4 * 3), 1));
+            }
             lastFrame = px;
             flickerFrames++;
             if(flickerFrames < 8) return;
             line("  frame-to-frame change over 8 frames in a row: largest mean difference " + Strings.fixed(flickerMean, 3)
                 + " (of 255), largest share of pixels changing by more than 12: " + Strings.fixed(flickerMax * 100f, 2) + "%");
+            line("  mean brightness of those frames: " + flickerLumas);
+            flickerLumas.setLength(0);
         }
         if(elapsed >= need){
             if(fpsShot && fpsFrames > 1){
@@ -486,11 +563,73 @@ public class TestKit extends Mod{
                     camSet = true;
                 }
                 case "blocks" -> placeBlocks();
+                case "churn" -> churn = Boolean.parseBoolean(v);
+                case "construct" -> construct = Boolean.parseBoolean(v);
+                case "hot" -> hot = Boolean.parseBoolean(v);
+                case "smoke" -> smoke = Boolean.parseBoolean(v);
+                case "beams" -> {
+                    beams = Boolean.parseBoolean(v);
+                    beamWalls = false;
+                }
+                case "pools" -> {
+                    // pools=true: three round pools beside the middle of the view - slag, tar, cryofluid
+                    mindustry.world.Block[] kinds = {Blocks.slag, Blocks.tar, Blocks.cryofluid};
+                    int mx = (int)(camX / Vars.tilesize), my = (int)(camY / Vars.tilesize);
+                    for(int pk = 0; pk < 3; pk++){
+                        int cx = mx - 14 + pk * 14, cy = my;
+                        for(int dx = -6; dx <= 6; dx++){
+                            for(int dy = -6; dy <= 6; dy++){
+                                if(dx * dx + dy * dy > 30) continue;
+                                var t = Vars.world.tile(cx + dx, cy + dy);
+                                if(t == null) continue;
+                                if(t.build != null || t.block() != Blocks.air) t.setAir();
+                                t.setFloor(kinds[pk].asFloor());
+                            }
+                        }
+                    }
+                    Vars.renderer.blocks.floor.reload();
+                    line("  pools of slag, tar and cryofluid");
+                }
+                case "ownhere" -> {
+                    // ownhere=DX:DY: the player's unit is put that far (world units) from the middle of the view
+                    String[] p = v.split(":");
+                    if(Vars.player.unit() != null) Vars.player.unit().set(camX + Float.parseFloat(p[0]), camY + Float.parseFloat(p[1]));
+                }
+                case "weather" -> {
+                    // weather=NAME: the game's own weather of that name starts (rain, snowing, sandstorm, ...), at full strength
+                    for(mindustry.type.Weather w : Vars.content.<mindustry.type.Weather>getBy(mindustry.ctype.ContentType.weather)){
+                        if(w.name.equals(v)){
+                            mindustry.gen.WeatherState st = w.create(1f, 60f * 600f);
+                            st.opacity(1f);
+                            line("  weather " + v + " started");
+                        }
+                    }
+                }
                 case "shore" -> placeShore();
                 case "belt" -> placeBelt();
                 case "sortrow" -> placeSortRow();
                 case "blockrow" -> placeBlockRow(v);
                 case "drill" -> placeDrill();
+                case "peekdrill" -> {
+                    // peekdrill=true (after drill=true): three ores under the drill and none on one tile, and the cursor on it
+                    var d = Vars.world.build(baseX + 1, baseY);
+                    if(d != null){
+                        mindustry.world.Block[] ores = {Blocks.oreCopper, Blocks.oreLead, Blocks.oreCopper, Blocks.air};
+                        int oreAt = 0;
+                        for(var t : d.tile.getLinkedTiles(new arc.struct.Seq<>())) t.setOverlay(ores[oreAt++ % 4]);
+                        Vars.renderer.blocks.floor.reload();
+                        try{
+                            Class<?> c = Vars.mods.mainLoader().loadClass("mshaders.OrePeek");
+                            c.getField("testX").setFloat(null, d.x);
+                            c.getField("testY").setFloat(null, d.y);
+                        }catch(Throwable t){
+                            line("  no peek: " + t);
+                        }
+                        camX = d.x;
+                        camY = d.y;
+                        camSet = true;
+                    }
+                }
                 case "drillbelt" -> placeDrillBelt();
                 case "row" -> placeRow();
                 case "cluster" -> placeCluster();
@@ -629,6 +768,24 @@ public class TestKit extends Mod{
                 }
                 case "spin" -> spin = Float.parseFloat(v);
                 case "shields" -> placeShields();
+                case "erekirshields" -> {
+                    // erekirshields=true: a large shield projector, and a column of shielded walls beside it (the team cheats, so all is powered)
+                    var team = Vars.player.team();
+                    Vars.state.rules.teams.get(team).cheat = true;
+                    int mx = (int)(camX / Vars.tilesize), my = (int)(camY / Vars.tilesize);
+                    for(int dx = -16; dx <= 16; dx++){
+                        for(int dy = -12; dy <= 12; dy++){
+                            var t = Vars.world.tile(mx + dx, my + dy);
+                            if(t != null && t.block() != Blocks.air) t.setAir();
+                        }
+                    }
+                    // the large shield far to the left, out of the way of the others (shields that overlap merge into one shape)
+                    var big = Vars.world.tile(mx - 60, my);
+                    if(big != null) big.setBlock(Blocks.largeShieldProjector, team, 0);
+                    for(int dy = -6; dy <= 6; dy += 2) Vars.world.tile(mx + 2, my + dy).setBlock(Blocks.shieldedWall, team, 0);
+                    Vars.world.tile(mx + 40, my).setBlock(Blocks.forceProjector, team, 0);
+                    line("  large shield projector, shielded walls, a force projector");
+                }
                 case "zoomf" -> {
                     // zoomf=F: any zoom, fractions too (0.5 = as far out as the game lets a player go)
                     Vars.renderer.minZoom = Math.min(Vars.renderer.minZoom, Float.parseFloat(v));
@@ -716,6 +873,52 @@ public class TestKit extends Mod{
                     line("  a row of " + v + " menders at " + mx + "," + my);
                 }
                 case "statuses" -> statusRow = v.split("[+]");
+                case "grid" -> {
+                    // grid=true: a combustion generator line feeding a few power nodes and a ground factory making daggers
+                    var team = Vars.player.team();
+                    Vars.state.rules.teams.get(team).cheat = true;
+                    int bx = (int)(camX / Vars.tilesize), by = (int)(camY / Vars.tilesize);
+                    for(int dx = -14; dx <= 14; dx++) for(int dy = -9; dy <= 9; dy++){
+                        var tt = Vars.world.tile(bx + dx, by + dy);
+                        if(tt != null && tt.build == null && tt.block() != Blocks.air) tt.setAir();
+                    }
+                    int[][] at = {{-12, 4}, {-6, 6}, {0, 4}, {6, 6}};
+                    var ft = Vars.world.tile(bx + 6, by + 1);
+                    if(ft != null) ft.setBlock(Blocks.groundFactory, team, 0);
+                    var gen = Vars.world.tile(bx - 12, by + 1);
+                    if(gen != null) gen.setBlock(Blocks.largeSolarPanel, team, 0);
+                    mindustry.gen.Building prev = null, first = null;
+                    for(int[] a : at){
+                        var nt = Vars.world.tile(bx + a[0], by + a[1]);
+                        if(nt == null) continue;
+                        nt.setBlock(Blocks.powerNode, team, 0);
+                        if(prev != null && nt.build != null) prev.configureAny(nt.build.pos());
+                        if(first == null) first = nt.build;
+                        prev = nt.build;
+                    }
+                    // the nodes link to what they power (a generator takes no links of its own)
+                    if(first != null && gen != null && gen.build != null) first.configureAny(gen.build.pos());
+                    if(prev != null && ft != null && ft.build != null) prev.configureAny(ft.build.pos());
+                    if(ft != null && ft.build instanceof mindustry.world.blocks.units.UnitFactory.UnitFactoryBuild fb){
+                        fb.configureAny(0);
+                        fb.items.add(Items.silicon, 100);
+                        fb.items.add(Items.lead, 100);
+                    }
+                    camSet = true;
+                    line("  power nodes and a ground factory near " + bx + "," + by);
+                }
+                case "place" -> {
+                    // place=BLOCK: the player is placing that block (as if picked from the menu); the cursor is held on the camera's middle
+                    Vars.control.input.block = Vars.content.block(v);
+                    holdCursor = true;
+                    try{
+                        Class<?> c = Vars.mods.mainLoader().loadClass("mshaders.Cutaway");
+                        c.getField("testX").setFloat(null, camX);
+                        c.getField("testY").setFloat(null, camY);
+                    }catch(Throwable t){
+                        line("  no cursor: " + t);
+                    }
+                }
                 case "menderl" -> {
                     // menderl=true (after pulses=true): an L of menders, 10 across and 6 up, below the mend projector
                     var team = Vars.player.team();

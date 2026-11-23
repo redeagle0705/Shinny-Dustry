@@ -86,11 +86,18 @@ public class ShadowFx{
      * Runs on game time (GameState.tick), so it stands still while the game is paused. Cycle 0 = always the set length.
      */
     public static float dayFactor(){
+        // with a time of day (the campaign's, or the mod's own), the length goes by the height of the sun
+        if(Daytime.active()) return Daytime.lengthFactor();
         int minutes = Core.settings.getInt(ShaderMod.shadowCycle, 4);
         if(minutes <= 0) return 1f;
         double phase = Vars.state.tick / (minutes * 3600.0);
-        return 1f + 0.6f * (float)Math.sin(phase * Math.PI * 2.0);
+        float length = 1f + 0.6f * (float)Math.sin(phase * Math.PI * 2.0);
+        // in small steps, not a hair every frame (that made the shadow edges shimmer), as Daytime does
+        if(Float.isNaN(heldLength) || Math.abs(length - heldLength) >= 0.05f) heldLength = length;
+        return heldLength;
     }
+
+    private static float heldLength = Float.NaN;
 
     public boolean ready(){
         return directional != null;

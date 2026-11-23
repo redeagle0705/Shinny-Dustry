@@ -11,6 +11,7 @@ import mindustry.mod.*;
 public class ShaderMod extends Mod{
     // setting keys (stored in the game's settings file)
     public static final String
+    liquidsOn = "mshaders-liquids", liquidsStrength = "mshaders-liquids-strength",
     waterOn = "mshaders-water", waterWave = "mshaders-water-wave", waterSparkle = "mshaders-water-sparkle", waterFoam = "mshaders-water-foam",
     iceOn = "mshaders-ice", iceStrength = "mshaders-ice-strength",
     floorsOn = "mshaders-floors", floorRock = "mshaders-floor-rock", floorSand = "mshaders-floor-sand", floorSnow = "mshaders-floor-snow",
@@ -19,6 +20,12 @@ public class ShaderMod extends Mod{
     shadowOn = "mshaders-shadow", shadowLength = "mshaders-shadow-length", shadowStrength = "mshaders-shadow-strength", shadowCycle = "mshaders-shadow-cycle", shadowQuality = "mshaders-shadow-quality", shadowAo = "mshaders-shadow-ao",
     shieldsOn = "mshaders-shields", shieldsBubble = "mshaders-shields-bubble", shieldsRipple = "mshaders-shields-ripple", shieldsLight = "mshaders-shields-light", shieldsHex = "mshaders-shields-hex", shieldsRefract = "mshaders-shields-refract", shieldsTurns = "mshaders-shields-turns", shieldsSheen = "mshaders-shields-sheen",
     shieldsCrack = "mshaders-shields-crack",
+    powerOn = "mshaders-power", powerStrength = "mshaders-power-strength", factoriesOn = "mshaders-factories",
+    orePeekOn = "mshaders-ore-peek", weatherOn = "mshaders-weather", weatherStrength = "mshaders-weather-strength",
+    heatOn = "mshaders-heat", heatStrength = "mshaders-heat-strength", beamsOn = "mshaders-beams",
+    dayCampaign = "mshaders-day-campaign", dayOwn = "mshaders-day-own", dayMinutes = "mshaders-day-minutes", dayTint = "mshaders-day-tint",
+    smokeShadowsOn = "mshaders-smoke-shadows", smokeShadowsStrength = "mshaders-smoke-shadows-strength",
+    cutawayStyle = "mshaders-cutaway", cutawaySize = "mshaders-cutaway-size",
     statusesOn = "mshaders-statuses", statusesStrength = "mshaders-statuses-strength",
     pulsesOn = "mshaders-pulses", pulsesWave = "mshaders-pulses-wave", pulsesHaze = "mshaders-pulses-haze",
     blastsOn = "mshaders-blasts", blastsShock = "mshaders-blasts-shock", blastsFlash = "mshaders-blasts-flash", blastsScorch = "mshaders-blasts-scorch", blastsScorchTime = "mshaders-blasts-scorch-time", sunAngle = "mshaders-sun-angle",
@@ -56,6 +63,7 @@ public class ShaderMod extends Mod{
 
     private EngineDialog engineDialog;
     public final WaterFx water = new WaterFx();
+    public final LiquidFx liquids = new LiquidFx();
     public final Scene scene = new Scene();
     public final ShadowFx shadow = new ShadowFx();
     public final IceFx ice = new IceFx();
@@ -67,6 +75,7 @@ public class ShaderMod extends Mod{
         if(Vars.headless) return;
 
         Core.settings.defaults(
+            liquidsOn, true, liquidsStrength, 100,
             waterOn, true, waterWave, 100, waterSparkle, 100, waterFoam, 100,
             iceOn, true, iceStrength, 100,
             floorsOn, true, floorRock, 100, floorSand, 100, floorSnow, 100, floorGrass, 100, floorHot, 100, floorMetal, 100, floorRelief, 100,
@@ -78,6 +87,8 @@ public class ShaderMod extends Mod{
             shieldsOn, true, shieldsBubble, 100, shieldsRipple, 100, shieldsLight, 100, shieldsHex, 100, shieldsRefract, 100, shieldsTurns, true, shieldsSheen, 100, shieldsCrack, 100,
             pulsesOn, true, pulsesWave, 100, pulsesHaze, 100,
             statusesOn, true, statusesStrength, 100,
+            cutawayStyle, 1, cutawaySize, 100, orePeekOn, true, weatherOn, true, weatherStrength, 100, heatOn, true, heatStrength, 100, beamsOn, true, dayCampaign, true, dayOwn, false, dayMinutes, 12, dayTint, 100, smokeShadowsOn, true, smokeShadowsStrength, 100,
+            powerOn, true, powerStrength, 100, factoriesOn, true,
             blastsOn, true, blastsShock, 100, blastsFlash, 100, blastsScorch, 100, blastsScorchTime, 5,
             postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15, spare, 100
         );
@@ -100,14 +111,23 @@ public class ShaderMod extends Mod{
         // the scene registers its frame hooks first, so its buffer is open before the others run
         scene.init();
         water.init(scene);
+        liquids.init();
         shadow.init(scene);
         ice.init(scene);
         floors.init();
         Shields.init(scene);
+        Skies.init(scene);
+        HeatHaze.init();
+        Beams.init();
         Pulses.init();
         Statuses.init();
+        Cutaway.init();
+        OrePeek.init();
+        PowerLines.init();
+        Factories.init();
         try{
             Log.info("[mshaders] explosion effects with a shock wave: @", Blasts.install());
+            Log.info("[mshaders] smoke effects with a shadow: @", SmokeShadows.install());
         }catch(Throwable t){
             Log.err("[mshaders] explosions stay as the game draws them", t);
         }
@@ -126,6 +146,8 @@ public class ShaderMod extends Mod{
             f.slider(iceStrength, 100, 0, 200, 5, i -> i + "%");
             f.check(reflectOn, true);
             f.slider(reflectStrength, 100, 0, 200, 5, i -> i + "%");
+            f.check(liquidsOn, true);
+            f.slider(liquidsStrength, 100, 0, 100, 10, i -> i == 0 ? off : i + "%");
 
             f.section("ground");
             f.check(floorsOn, true);
@@ -141,6 +163,12 @@ public class ShaderMod extends Mod{
             f.slider(shadowAo, 100, 0, 150, 5, i -> i + "%");
             f.slider(sunAngle, 45, 0, 355, 5, i -> i + "°");
             f.slider(shadowCycle, 4, 0, 30, 1, i -> i == 0 ? off : Core.bundle.format("mshaders.minutes", i));
+
+            f.section("day");
+            f.check(dayCampaign, true);
+            f.check(dayOwn, false);
+            f.slider(dayMinutes, 12, 2, 60, 1, i -> Core.bundle.format("mshaders.minutes", i));
+            f.slider(dayTint, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
 
             f.section("lights");
             f.check(lightsOn, true);
@@ -167,6 +195,10 @@ public class ShaderMod extends Mod{
             f.slider(normalsStrength, 100, 0, 200, 5, i -> i + "%");
             f.slider(normalsMetal, 100, 0, 200, 5, i -> i == 0 ? off : i + "%");
             f.check(normalsHeight, true);
+            f.check(powerOn, true);
+            f.slider(powerStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.check(factoriesOn, true);
+            f.check(orePeekOn, true);
 
             f.section("units");
             f.check(boostersOn, true);
@@ -178,6 +210,8 @@ public class ShaderMod extends Mod{
                 engineDialog.show();
             });
             f.check(normalsOwnLight, false);
+            f.slider(cutawayStyle, 1, 0, 3, 1, i -> i == 0 ? off : Core.bundle.get(i == 1 ? "mshaders.cutaway.dither" : i == 2 ? "mshaders.cutaway.cut" : "mshaders.cutaway.fade"));
+            f.slider(cutawaySize, 100, 50, 200, 10, i -> i + "%");
             f.check(statusesOn, true);
             f.slider(statusesStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
 
@@ -196,6 +230,15 @@ public class ShaderMod extends Mod{
             f.check(pulsesOn, true);
             f.slider(pulsesWave, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.slider(pulsesHaze, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+
+            f.section("weather");
+            f.check(weatherOn, true);
+            f.slider(weatherStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.check(heatOn, true);
+            f.slider(heatStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.check(beamsOn, true);
+            f.check(smokeShadowsOn, true);
+            f.slider(smokeShadowsStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
 
             f.section("blasts");
             f.check(blastsOn, true);
@@ -296,17 +339,18 @@ public class ShaderMod extends Mod{
     }
 
     /** Direction towards the sun on the ground, as the setting says: 0 = right, 90 = up. One value for shadows, normal-map shading and ground relief. */
+    // (with a time of day, the sun moves round the set angle: Daytime)
     static float sunX(){
-        return Mathf.cosDeg(Core.settings.getInt(sunAngle, 45));
+        return Mathf.cosDeg(Daytime.sunAngle(Core.settings.getInt(sunAngle, 45)));
     }
 
     static float sunY(){
-        return Mathf.sinDeg(Core.settings.getInt(sunAngle, 45));
+        return Mathf.sinDeg(Daytime.sunAngle(Core.settings.getInt(sunAngle, 45)));
     }
 
     /** How much daylight the map has: 1 on a bright map; on a dark one what its darkness leaves, but not less than 0.15. The sun counts by this much. */
     static float daylight(){
-        return Vars.state.rules.lighting ? Math.max(1f - Vars.state.rules.ambientLight.a, 0.15f) : 1f;
+        return (Vars.state.rules.lighting ? Math.max(1f - Vars.state.rules.ambientLight.a, 0.15f) : 1f) * Daytime.sunlight();
     }
 
     static float percent(String key, int def){

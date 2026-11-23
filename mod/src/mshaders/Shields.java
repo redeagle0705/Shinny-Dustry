@@ -132,6 +132,7 @@ public class Shields{
                     for(int i = inViewCount * 4; i < inView.length; i++) inView[i] = 0f;
                     for(int i = inViewCount; i < hurt.length; i++) hurt[i] = 0f;
                     setUniformf("u_crack", on ? ShaderMod.percent(ShaderMod.shieldsCrack, 100) : 0f);
+                    setUniformf("u_pxw", Core.camera.width / Math.max(Core.graphics.getWidth(), 1));
                     if(hasUniform("u_hurt[0]") || hasUniform("u_hurt")) setUniform1fv("u_hurt", hurt, 0, inViewKept);
                     if(hasUniform("u_sides[0]") || hasUniform("u_sides")) setUniform2fv("u_sides", shapes, 0, inViewKept * 2);
                     if(hasUniform("u_shields[0]") || hasUniform("u_shields")) setUniform4fv("u_shields", inView, 0, inViewKept * 4);
@@ -218,6 +219,19 @@ public class Shields{
                     note(force.x, force.y, radius, force.pos(), force.buildup / Math.max(type.shieldHealth + type.phaseShieldBoost * force.phaseHeat, 1f));
                 }
             }
+        }
+        // the round shields of Erekir (shield projector, large shield projector): left out at first, so they had none of
+        // the dome, the waves of light or the cracks the others have ("the large shield projector doesn't fit with the
+        // other shields")
+        float cx = view.x + view.width / 2f, cy = view.y + view.height / 2f, reach = Mathf.dst(view.width, view.height) / 2f + 600f;
+        for(TeamData data : Vars.state.teams.present){
+            Vars.indexer.eachBlock(data.team, cx, cy, reach, b -> b instanceof BaseShield.BaseShieldBuild, b -> {
+                var base = (BaseShield.BaseShieldBuild)b;
+                float radius = base.radius();
+                if(base.broken || radius < 1f || !view.overlaps(b.x - radius, b.y - radius, radius * 2f, radius * 2f)) return;
+                shape(((BaseShield)b.block).sides, 0f);
+                note(b.x, b.y, radius, b.pos(), 0f);
+            });
         }
         for(Unit unit : Groups.unit){
             if(unit.shield <= 0f || unit.abilities.length == 0) continue;
