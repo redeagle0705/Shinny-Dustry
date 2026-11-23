@@ -23,12 +23,13 @@ public class ShaderMod extends Mod{
     powerOn = "mshaders-power", powerStrength = "mshaders-power-strength", factoriesOn = "mshaders-factories",
     orePeekOn = "mshaders-ore-peek", weatherOn = "mshaders-weather", weatherStrength = "mshaders-weather-strength",
     heatOn = "mshaders-heat", heatStrength = "mshaders-heat-strength", beamsOn = "mshaders-beams",
+    hitHeatOn = "mshaders-hit-heat", hitHeatStrength = "mshaders-hit-heat-strength", tracksOn = "mshaders-tracks", tracksStrength = "mshaders-tracks-strength", wakesOn = "mshaders-wakes", wakesStrength = "mshaders-wakes-strength",
     dayCampaign = "mshaders-day-campaign", dayOwn = "mshaders-day-own", dayMinutes = "mshaders-day-minutes", dayTint = "mshaders-day-tint",
     smokeShadowsOn = "mshaders-smoke-shadows", smokeShadowsStrength = "mshaders-smoke-shadows-strength",
     cutawayStyle = "mshaders-cutaway", cutawaySize = "mshaders-cutaway-size",
     statusesOn = "mshaders-statuses", statusesStrength = "mshaders-statuses-strength",
     pulsesOn = "mshaders-pulses", pulsesWave = "mshaders-pulses-wave", pulsesHaze = "mshaders-pulses-haze",
-    blastsOn = "mshaders-blasts", blastsShock = "mshaders-blasts-shock", blastsFlash = "mshaders-blasts-flash", blastsScorch = "mshaders-blasts-scorch", blastsScorchTime = "mshaders-blasts-scorch-time", sunAngle = "mshaders-sun-angle",
+    blastsOn = "mshaders-blasts", blastsShock = "mshaders-blasts-shock", blastsFlash = "mshaders-blasts-flash", blastsScorch = "mshaders-blasts-scorch", blastsScorchTime = "mshaders-blasts-scorch-time", blastsDust = "mshaders-blasts-dust", sunAngle = "mshaders-sun-angle",
     lightsOn = "mshaders-lights", lightsStrength = "mshaders-lights-strength", darkDepth = "mshaders-dark-depth", lightsColor = "mshaders-lights-color", lightsMoving = "mshaders-lights-moving", lightsMax = "mshaders-lights-max", lightsDetail = "mshaders-lights-detail", lightsAir = "mshaders-lights-air", lightsShots = "mshaders-lights-shots", shotShadows = "mshaders-shot-shadows", lightsGround = "mshaders-lights-ground", lightsUnits = "mshaders-lights-units", lightsUnitsDepth = "mshaders-lights-units-depth",
     // found, not listed: the slider appears once a thorium reactor has blown up in view (LightTap.reactorBoost)
     reactorFun = "mshaders-reactor-fun", reactorFound = "mshaders-reactor-found",
@@ -87,9 +88,9 @@ public class ShaderMod extends Mod{
             shieldsOn, true, shieldsBubble, 100, shieldsRipple, 100, shieldsLight, 100, shieldsHex, 100, shieldsRefract, 100, shieldsTurns, true, shieldsSheen, 100, shieldsCrack, 100,
             pulsesOn, true, pulsesWave, 100, pulsesHaze, 100,
             statusesOn, true, statusesStrength, 100,
-            cutawayStyle, 1, cutawaySize, 100, orePeekOn, true, weatherOn, true, weatherStrength, 100, heatOn, true, heatStrength, 100, beamsOn, true, dayCampaign, true, dayOwn, false, dayMinutes, 12, dayTint, 100, smokeShadowsOn, true, smokeShadowsStrength, 100,
+            cutawayStyle, 1, cutawaySize, 100, orePeekOn, true, weatherOn, true, weatherStrength, 100, heatOn, true, heatStrength, 100, beamsOn, true, hitHeatOn, true, hitHeatStrength, 100, tracksOn, true, tracksStrength, 100, wakesOn, true, wakesStrength, 100, dayCampaign, true, dayOwn, false, dayMinutes, 12, dayTint, 100, smokeShadowsOn, true, smokeShadowsStrength, 100,
             powerOn, true, powerStrength, 100, factoriesOn, true,
-            blastsOn, true, blastsShock, 100, blastsFlash, 100, blastsScorch, 100, blastsScorchTime, 5,
+            blastsOn, true, blastsShock, 100, blastsFlash, 100, blastsScorch, 100, blastsScorchTime, 5, blastsDust, 100,
             postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15, spare, 100
         );
 
@@ -119,6 +120,10 @@ public class ShaderMod extends Mod{
         Skies.init(scene);
         HeatHaze.init();
         Beams.init();
+        HitHeat.init();
+        SnowCover.init();
+        Tracks.init();
+        Wakes.init();
         Pulses.init();
         Statuses.init();
         Cutaway.init();
@@ -137,11 +142,26 @@ public class ShaderMod extends Mod{
             Folds f = new Folds(t);
             String off = Core.bundle.get("mshaders.off", "off");
 
+            // Presets (friends of the maker: "the mod is getting heavier - split the features"): one press sets many
+            // switches at once; each can still be changed by hand after. Measured on a large base: the block shadows,
+            // the normal-map shading and the glint cost the most there; the mirror images cost on water maps.
+            f.section("presets");
+            // five steps, as other games have them ("low / medium / high / ultra / maximum")
+            for(int level = 0; level < 5; level++){
+                int l = level;
+                f.button("mshaders-preset-" + l, () -> {
+                    preset(l);
+                    f.rebuild();
+                });
+            }
+
             f.section("water");
             f.check(waterOn, true);
             f.slider(waterWave, 100, 0, 200, 5, i -> i + "%");
             f.slider(waterSparkle, 100, 0, 200, 5, i -> i + "%");
             f.slider(waterFoam, 100, 0, 200, 5, i -> i + "%");
+            f.check(wakesOn, true);
+            f.slider(wakesStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.check(iceOn, true);
             f.slider(iceStrength, 100, 0, 200, 5, i -> i + "%");
             f.check(reflectOn, true);
@@ -234,9 +254,13 @@ public class ShaderMod extends Mod{
             f.section("weather");
             f.check(weatherOn, true);
             f.slider(weatherStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.check(tracksOn, true);
+            f.slider(tracksStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.check(heatOn, true);
             f.slider(heatStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.check(beamsOn, true);
+            f.check(hitHeatOn, true);
+            f.slider(hitHeatStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.check(smokeShadowsOn, true);
             f.slider(smokeShadowsStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
 
@@ -244,6 +268,7 @@ public class ShaderMod extends Mod{
             f.check(blastsOn, true);
             f.slider(blastsShock, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.slider(blastsFlash, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(blastsDust, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.slider(blastsScorch, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.slider(blastsScorchTime, 5, 1, 60, 1, i -> Core.bundle.format("mshaders.seconds", i));
 
@@ -351,6 +376,58 @@ public class ShaderMod extends Mod{
     /** How much daylight the map has: 1 on a bright map; on a dark one what its darkness leaves, but not less than 0.15. The sun counts by this much. */
     static float daylight(){
         return (Vars.state.rules.lighting ? Math.max(1f - Vars.state.rules.ambientLight.a, 0.15f) : 1f) * Daytime.sunlight();
+    }
+
+    /**
+     * A preset: 0 low, 1 medium, 2 high, 3 ultra (as it comes), 4 maximum. Each lower step turns off more of the
+     * heavier effects; maximum turns the quality settings all the way up.
+     */
+    static void preset(int level){
+        full();
+        var s = Core.settings;
+        if(level == 4){
+            s.put(shadowQuality, 100);
+            s.put(lightsMax, Scene.maxLights);
+            s.put(lightsDetail, 100);
+            s.put(dayOwn, true);
+            return;
+        }
+        if(level >= 3) return;
+        // high
+        s.put(glintOn, false);
+        s.put(shadowQuality, 60);
+        s.put(smokeShadowsOn, false);
+        s.put(tracksOn, false);
+        s.put(wakesOn, false);
+        if(level >= 2) return;
+        // medium
+        s.put(shadowQuality, 35);
+        s.put(shieldsRefract, 0);
+        s.put(normalsOn, false);
+        s.put(reflectOn, false);
+        s.put(lightsUnits, false);
+        s.put(heatOn, false);
+        s.put(liquidsOn, false);
+        s.put(shadowAo, 0);
+        if(level >= 1) return;
+        // low
+        s.put(shadowQuality, 0);
+        s.put(lightsOn, false);
+        s.put(weatherOn, false);
+        s.put(beamsOn, false);
+        s.put(hitHeatOn, false);
+        s.put(shieldsHex, 0);
+        s.put(lightsDetail, 50);
+        s.put(lightsMax, 32);
+    }
+
+    /** Everything as it comes (every setting of the mod back to its default). */
+    static void full(){
+        for(String key : new String[]{glintOn, shadowQuality, smokeShadowsOn, tracksOn, wakesOn, shieldsRefract, normalsOn, reflectOn,
+            lightsUnits, heatOn, liquidsOn, shadowAo, pulsesHaze, lightsOn, weatherOn, beamsOn, hitHeatOn, waterOn, shadowOn, floorsOn,
+            shieldsHex, lightsDetail, lightsMax, dayOwn}){
+            Core.settings.remove(key);
+        }
     }
 
     static float percent(String key, int def){

@@ -56,7 +56,7 @@ public class HeatHaze{
     }
 
     /** Whether buildings of this block ever get hot. */
-    private static boolean canBeHot(Block block){
+    static boolean canBeHot(Block block){
         int k = kinds.get(block.id, 0);
         if(k == 0){
             k = hotKind(block) ? 1 : 2;
@@ -82,7 +82,7 @@ public class HeatHaze{
     }
 
     /** How hot this building is now, 0 .. 1. */
-    private static float heatOf(Building b){
+    static float heatOf(Building b){
         if(b instanceof TurretBuild t) return Mathf.clamp(t.heat);
         if(b instanceof NuclearReactorBuild r) return Mathf.clamp(Math.max(r.heat, r.productionEfficiency));
         if(b instanceof HeatProducerBuild h) return Mathf.clamp(h.heat / Math.max(((HeatProducer)h.block).heatOutput, 0.001f));

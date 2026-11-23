@@ -7,6 +7,7 @@ import arc.math.*;
 import arc.util.*;
 import mindustry.*;
 import mindustry.content.*;
+import arc.graphics.g2d.*;
 import mindustry.game.EventType.*;
 import mindustry.gen.*;
 
@@ -35,12 +36,36 @@ public class Skies{
     private static long lastFrame = -1;
     private static Scene scene;
 
+    /** The solid blocks as the sand piles see them: eased towards the real ones over a few seconds (two, swapped). */
+    private static FrameBuffer pileA, pileB;
+    private static Shader ease;
+    private static boolean fresh = true;
+    private static float lastEase;
+    private static Texture piles;
+
     static void init(Scene from){
         scene = from;
+        try{
+            ease = new Shader(Vars.tree.get("shaders/screenspace.vert").readString(),
+                "varying vec2 v_texCoords;\n" +
+                "uniform sampler2D u_texture;\n" +
+                "uniform sampler2D u_solid;\n" +
+                "uniform vec2 u_rate;\n" +
+                "void main(){\n" +
+                "    vec4 was = texture2D(u_texture, v_texCoords), now = texture2D(u_solid, v_texCoords);\n" +
+                // a pile grows slowly where a block now stands, and blows away slowly where one is gone
+                "    gl_FragColor = mix(was, now, now.r > was.r ? u_rate.x : u_rate.y);\n" +
+                "}\n");
+        }catch(Throwable t){
+            Log.err("[mshaders] easing of the sand piles unavailable", t);
+        }
+        // before the frame is drawn (the ground layer reads it while it is drawn)
+        Events.run(Trigger.preDraw, Skies::easePiles);
         // what lay on the last map does not come along to the next one
         Events.on(WorldLoadEvent.class, e -> {
             snow = 0f;
             sand = 0f;
+            fresh = true;
         });
     }
 
@@ -102,6 +127,54 @@ public class Skies{
         return Core.settings.getBool(ShaderMod.weatherOn, true) ? ShaderMod.percent(ShaderMod.weatherStrength, 100) : 0f;
     }
 
+    /**
+     * Eases the picture the sand piles are read from towards where the blocks stand now: a pile builds up over a few
+     * seconds when a block is put down, and blows away over a few seconds when it is gone (at first the piles were read
+     * from the blocks themselves and popped in and out at once - "a little unnatural").
+     */
+    private static void easePiles(){
+        piles = null;
+        update();
+        if(sand <= 0f || scene == null || ease == null || !Vars.state.isGame()) return;
+        Gl.activeTexture(Gl.texture1);
+        Texture solid = scene.heights();
+        Gl.activeTexture(Gl.texture0);
+        if(solid == null) return;
+        int w = solid.width, h = solid.height;
+        if(pileA == null){
+            pileA = new FrameBuffer(w, h);
+            pileB = new FrameBuffer(w, h);
+            fresh = true;
+        }
+        if(pileA.getWidth() != w || pileA.getHeight() != h){
+            pileA.resize(w, h);
+            pileB.resize(w, h);
+            fresh = true;
+        }
+        pileA.getTexture().setFilter(Texture.TextureFilter.linear);
+        pileB.getTexture().setFilter(Texture.TextureFilter.linear);
+        float dt = Vars.state.isPaused() ? 0f : Math.min(Math.max(Time.time - lastEase, 0f), 30f);
+        lastEase = Time.time;
+        Draw.flush();
+        solid.bind(1);
+        Gl.activeTexture(Gl.texture0);
+        ease.bind();
+        ease.setUniformi("u_solid", 1);
+        // grows in some 4 seconds, goes in some 5 (game time)
+        if(fresh) ease.setUniformf("u_rate", 1f, 1f);
+        else ease.setUniformf("u_rate", 1f - (float)Math.exp(-dt / 240f), 1f - (float)Math.exp(-dt / 300f));
+        fresh = false;
+        Blending.disabled.apply();
+        pileB.begin();
+        Draw.blit(pileA.getTexture(), ease);
+        pileB.end();
+        Blending.normal.apply();
+        FrameBuffer t = pileA;
+        pileA = pileB;
+        pileB = t;
+        piles = pileA.getTexture();
+    }
+
     /** Sets the weather uniforms of the ground's layer. */
     static void applyGround(Shader s){
         update();
@@ -110,16 +183,17 @@ public class Skies{
         if(s.hasUniform("u_snow")) s.setUniformf("u_snow", Math.min(snow * k, 1f));
         if(s.hasUniform("u_sand")) s.setUniformf("u_sand", Math.min(sand * k, 1f), Math.min(blowing * k, 1f));
         if(s.hasUniform("u_wind")) s.setUniformf("u_wind", windX, windY);
+        SnowCover.applyGround(s);
+        Tracks.applyGround(s);
         // where the blocks stand (Occluders: red = solid), for the sand that piles up against them
         // (heights() uploads the blocks placed or broken since the last frame, binding the picture to the active
         // texture unit to do it: with unit 0 active that put it in place of the ground layer's own picture for the
         // frame, and the whole screen flashed whenever a block was placed in a sandstorm. So unit 5 is made active
         // first, where it goes anyway.)
-        Texture solid = null;
-        if(sand > 0f && scene != null){
+        Texture solid = sand > 0f ? piles : null;
+        if(solid != null){
             Gl.activeTexture(Gl.texture5);
-            solid = scene.heights();
-            if(solid != null) solid.bind(5);
+            solid.bind(5);
             Gl.activeTexture(Gl.texture0);
         }
         if(s.hasUniform("u_solid")) s.setUniformi("u_solid", 5);

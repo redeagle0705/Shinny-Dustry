@@ -13,6 +13,9 @@ uniform float u_time;       // game ticks (60 per second)
 uniform float u_wave;       // refraction strength, 1 = default
 uniform float u_sparkle;    // glints and caustic lines, 1 = default
 uniform float u_foam;       // shore foam, 1 = default
+uniform sampler2D u_wake;   // wakes of units (Wakes.java): red = how much churned water
+uniform float u_hasWake;    // 0 = none; otherwise how strongly they show
+uniform vec2 u_wakeSize;    // the map in world units
 
 uniform float u_reflect;     // reflection strength, 0 = off
 
@@ -103,6 +106,17 @@ void main(){
     float lap = (1.0 - smoothstep(0.0, 0.035, abs(shore + wobble * 0.5 - reach))) * step(0.02, shore);
     float foam = clamp(band * 0.60 + lap * 0.45, 0.0, 1.0);
     color = mix(color, vec3(0.88, 0.95, 1.0), clamp(foam * u_foam, 0.0, 1.0));
+
+    // wakes behind units in the water: foam broken up into flecks, and the water around it a little lighter
+    if(u_hasWake > 0.001){
+        float wk = texture2D(u_wake, (world + 4.0) / u_wakeSize).r * u_hasWake;
+        if(wk > 0.003){
+            float fleck = noise(world / 7.0 + vec2(t * 0.09, -t * 0.07)) * 0.6 + noise(world / 3.0 - vec2(t * 0.13, t * 0.05)) * 0.4;
+            float wfoam = smoothstep(0.2, 0.55, wk * (0.35 + 1.0 * fleck));
+            color += min(wk, 1.0) * 0.06;
+            color = mix(color, vec3(0.90, 0.96, 1.0), clamp(wfoam, 0.0, 0.75));
+        }
+    }
 
     gl_FragColor = vec4(color, min(base.a * 100.0, 1.0));
 }

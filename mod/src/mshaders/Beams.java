@@ -124,6 +124,17 @@ public class Beams{
                 float px = Mathf.lerp(b.x, x2, t), py = Mathf.lerp(b.y, y2, t);
                 if(camera.overlaps(px - reach, py - reach, reach * 2f, reach * 2f)) HeatHaze.extra(px, py, reach, 0.85f * strength);
             }
+            // the snow on the ground melts along it (a lancer's shot at once, a continuous beam as it stays)
+            boolean once = type instanceof LaserBulletType;
+            if(!paused && (!once || b.time <= Time.delta + 0.01f)){
+                float r = Math.max(width * 0.7f, 4f) + 3f, step = r * 0.8f;
+                int m = Math.min((int)(len / step) + 1, 60);
+                for(int i = 0; i <= m; i++){
+                    float t = m == 0 ? 1f : i / (float)m;
+                    SnowCover.stamp(Mathf.lerp(b.x, x2, t), Mathf.lerp(b.y, y2, t), r, (once ? 0.9f : 0.12f) * strength);
+                }
+                SnowCover.stamp(x2, y2, r * 2f, (once ? 0.8f : 0.15f) * strength);
+            }
         }
         drawEmbers();
     }

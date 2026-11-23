@@ -40,6 +40,11 @@ uniform float u_rain;        // how much rain there is, 0 = none (Skies.java)
 uniform float u_snow;        // how much snow lies on the ground, 0 = none
 uniform vec2 u_sand;         // x: how much sand has drifted onto the ground, y: how hard the sandstorm blows now
 uniform vec2 u_wind;         // where the sandstorm blows towards, length 1
+uniform sampler2D u_tracks;  // tracks of ground units (Tracks.java): red = how deep
+uniform float u_hasTracks;   // 0 = none; otherwise how strongly they show
+uniform sampler2D u_melt;    // where beams melted the snow (SnowCover): two pixels a tile, red = how far melted
+uniform float u_hasMelt;     // 0 = no such picture
+uniform vec4 u_warm[16];     // hot buildings that have melted their snow: x, y, reach, how far melted (SnowCover.java); reach 0 = not in use
 uniform sampler2D u_solid;   // one texel per tile, linear filtered: red = a solid block stands there (Occluders.java)
 uniform float u_hasSolid;    // 0 = no such picture
 
@@ -143,8 +148,33 @@ float glints(vec2 world, vec2 eye, float shift, float size, float drift, float l
 // Snow lying on the ground: first a dusting on what stands higher (the lighter parts of the tile), then broad drifts
 // that grow together until all is white. Not on water and other liquids, nor on hot rock (it melts there). On snow
 // floor: fresh, whiter, more sparkle.
+float tracksAt(vec2 world){
+    if(u_hasTracks <= 0.001) return 0.0;
+    return clamp(texture2D(u_tracks, (world + 4.0) / (8.0 * u_tiles)).r * u_hasTracks, 0.0, 1.0);
+}
+
+// How far the snow here has thawed around hot buildings (a ring around each, its edge broken up a little), 0 .. 1.
+float thawAt(vec2 world){
+    float thaw = 0.0;
+    for(int i = 0; i < 16; i++){
+        vec4 w = u_warm[i];
+        if(w.z < 0.5) break;
+        float d = length(world - w.xy) / w.z + (noise(world / 14.0) - 0.5) * 0.35 + (noise(world / 5.0) - 0.5) * 0.15;
+        thaw = max(thaw, w.w * (1.0 - smoothstep(0.35, 1.0, d)));
+    }
+    if(u_hasMelt > 0.5){
+        float m = texture2D(u_melt, (world + 4.0) / (8.0 * u_tiles)).r;
+        thaw = max(thaw, smoothstep(0.15, 0.6, m + (noise(world / 9.0) - 0.5) * 0.25));
+    }
+    return thaw;
+}
+
 vec3 snowOn(vec3 color, vec2 world, float kind, vec2 eye, float fine){
-    float c = u_snow;
+    // ("can't the snow on the ground melt too?") - around hot buildings it thaws, the ground left a little darker, wet
+    float thaw = thawAt(world);
+    // (pushed aside where units walk: the ground shows through their tracks)
+    float c = u_snow * (1.0 - thaw) * (1.0 - 0.85 * tracksAt(world));
+    color *= 1.0 - thaw * 0.10 * min(u_snow * 2.0, 1.0);
     float lum = dot(color, vec3(0.299, 0.587, 0.114));
     vec3 fresh = vec3(0.90, 0.93, 0.98);
     float t = u_time / 60.0;
@@ -480,6 +510,14 @@ void main(){
         if(u_snow > 0.001) color = snowOn(color, world, kind, eye, fine);
         if(ore > 0.0) color = mix(color, bare, ore * 0.75);
         if(u_rain > 0.001) color = rainOn(color, world, kind);
+        // tracks pressed into soft ground (sand, snow, and what the weather lays down): a darker groove, cooler in snow
+        float tr = tracksAt(world);
+        if(tr > 0.003){
+            float snowy = max(kind > 2.5 && kind < 3.5 ? 1.0 : 0.0, min(u_snow * 2.0, 1.0));
+            float soft = max(max(kind > 1.5 && kind < 2.5 ? 1.0 : 0.0, snowy), min(u_sand.x * 1.5, 1.0) * 0.8);
+            vec3 pressed = mix(color * 0.68, color * vec3(0.70, 0.78, 0.92), snowy);
+            color = mix(color, pressed, clamp(tr * 1.4 * soft * (1.0 - ore), 0.0, 1.0));
+        }
     }
 
     gl_FragColor = vec4(color, base.a);

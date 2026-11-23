@@ -82,6 +82,7 @@ public class WaterFx{
             set("u_wave", ShaderMod.percent(ShaderMod.waterWave, 100));
             set("u_sparkle", ShaderMod.percent(ShaderMod.waterSparkle, 100));
             set("u_foam", ShaderMod.percent(ShaderMod.waterFoam, 100));
+            Wakes.apply(this);
         }
 
         // Shader.setUniformf throws for a uniform the GLSL compiler removed, so check first

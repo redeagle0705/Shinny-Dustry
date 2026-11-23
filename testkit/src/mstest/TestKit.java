@@ -151,6 +151,11 @@ public class TestKit extends Mod{
     boolean beams;
     mindustry.gen.Bullet sweep;
     boolean beamWalls;
+    boolean hitWalls, hitPlaced;
+    final arc.struct.Seq<mindustry.gen.Building> stoppedBelts = new arc.struct.Seq<>();
+    final arc.struct.Seq<mindustry.gen.Unit> walkers = new arc.struct.Seq<>();
+    float walkStart;
+    float hitX, hitY;
     int constructAt;
     /** statuses=a+b+c (after crowd=): the units of the row get those status effects, one each in turn, held. */
     String[] statusRow;
@@ -248,6 +253,37 @@ public class TestKit extends Mod{
                     int tx = (int)(Core.camera.position.x / 8f) + 3 + (constructAt % 6), ty = (int)(Core.camera.position.y / 8f) + 3 + (constructAt / 6) % 3;
                     constructAt++;
                     Vars.player.unit().addBuild(new mindustry.entities.units.BuildPlan(tx, ty, 0, Blocks.copperWall));
+                }
+                for(var sb : stoppedBelts) sb.enabled = false;
+                for(int i = 0; i < walkers.size; i++){
+                    var u = walkers.get(i);
+                    if(!u.isValid()) continue;
+                    float ang = (Time.time - walkStart) * 0.6f + i * 120f, r = 40f + i * 18f;
+                    float wx = camX - 60f + i * 60f + Angles.trnsx(ang, r), wy = camY + Angles.trnsy(ang, r);
+                    u.rotation(ang + 90f);
+                    u.vel.set(wx - u.x, wy - u.y);
+                    u.set(wx, wy);
+                }
+                if(hitWalls && !Vars.state.isPaused()){
+                    // three enemy walls above the middle: the left one under heavy fire, the middle one light, the right one none
+                    if(!hitPlaced){
+                        hitPlaced = true;
+                        Vars.state.rules.teams.get(mindustry.game.Team.crux).blockHealthMultiplier = 100000f;
+                        int cx = (int)(Core.camera.position.x / Vars.tilesize), cy = (int)(Core.camera.position.y / Vars.tilesize);
+                        for(int w = -1; w <= 1; w++){
+                            var t = Vars.world.tile(cx + w * 4, cy + 3);
+                            if(t != null){
+                                if(t.build != null || t.block() != Blocks.air) t.setAir();
+                                t.setBlock(Blocks.titaniumWallLarge, mindustry.game.Team.crux, 0);
+                            }
+                        }
+                        hitX = cx * Vars.tilesize;
+                        hitY = (cy + 3) * Vars.tilesize;
+                    }
+                    var shot = mindustry.content.UnitTypes.dagger.weapons.first().bullet;
+                    long f = Core.graphics.getFrameId();
+                    if(f % 3 == 0) shot.create(null, Vars.player.team(), hitX - 32f + Mathf.range(4f), hitY - 60f, 90f);
+                    if(f % 30 == 0) shot.create(null, Vars.player.team(), hitX + Mathf.range(4f), hitY - 60f, 90f);
                 }
                 if(beams && !beamWalls){
                     // a row of walls across the meltdown's sweep and the lancer's line, where the camera is now
@@ -567,6 +603,49 @@ public class TestKit extends Mod{
                 case "construct" -> construct = Boolean.parseBoolean(v);
                 case "hot" -> hot = Boolean.parseBoolean(v);
                 case "smoke" -> smoke = Boolean.parseBoolean(v);
+                case "hitwalls" -> hitWalls = Boolean.parseBoolean(v);
+                case "lake" -> {
+                    // lake=true: deep water all over the view (for units on water)
+                    int cx = (int)(camX / Vars.tilesize), cy = (int)(camY / Vars.tilesize);
+                    for(int dx = -30; dx <= 30; dx++) for(int dy = -18; dy <= 18; dy++){
+                        var t = Vars.world.tile(cx + dx, cy + dy);
+                        if(t == null) continue;
+                        if(t.block() != Blocks.air) t.setAir();
+                        t.setFloor(Blocks.deepwater.asFloor());
+                    }
+                    Vars.renderer.blocks.floor.reload();
+                }
+                case "walkers" -> {
+                    // walkers=TYPE+TYPE..: units of those types that walk round in circles beside the middle of the view
+                    walkers.clear();
+                    String[] types = v.split("[+]");
+                    for(int i = 0; i < types.length; i++){
+                        var type = Vars.content.unit(types[i]);
+                        if(type != null) walkers.add(type.spawn(Vars.player.team(), camX, camY));
+                    }
+                    walkStart = Time.time;
+                }
+                case "belts" -> {
+                    // belts=true: a running conveyor line (titanium) and below it one held stopped (switched off), left of the middle
+                    int cx = (int)(camX / Vars.tilesize) - 10, cy = (int)(camY / Vars.tilesize);
+                    stoppedBelts.clear();
+                    for(int dx = 0; dx < 8; dx++) for(int row = 0; row < 2; row++){
+                        var t = Vars.world.tile(cx + dx, cy + row * 3);
+                        if(t == null) continue;
+                        if(t.block() != Blocks.air) t.setAir();
+                        t.setBlock(Blocks.titaniumConveyor, Vars.player.team(), 0);
+                        if(row == 1 && t.build != null) stoppedBelts.add(t.build);
+                    }
+                }
+                case "smelters" -> {
+                    // smelters=true: four silicon smelters side by side, a little right of the middle
+                    int cx = (int)(camX / Vars.tilesize) + 6, cy = (int)(camY / Vars.tilesize);
+                    for(int dx = -2; dx <= 4; dx++) for(int dy = -2; dy <= 4; dy++){
+                        var t = Vars.world.tile(cx + dx, cy + dy);
+                        if(t != null && t.block() != Blocks.air) t.setAir();
+                    }
+                    for(int i = 0; i < 2; i++) for(int j = 0; j < 2; j++) Vars.world.tile(cx + i * 2, cy + j * 2).setBlock(Blocks.siliconSmelter, Vars.player.team(), 0);
+                }
                 case "beams" -> {
                     beams = Boolean.parseBoolean(v);
                     beamWalls = false;

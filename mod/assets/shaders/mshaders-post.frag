@@ -409,7 +409,8 @@ void main(){
         // (lit like a lamp: what is bright already gains little - at first the front burnt pale sand white)
         vec3 p = min(pulseLight(wpos, onBlock), vec3(1.2));
         float room = 1.0 - luma(color);
-        color += p * (color * 0.55 + 0.06) * (0.25 + 0.75 * room);
+        // (twice what it was: on the ground the front came to some 10 of 255 - "the overdrive's wave seems gone")
+        color += p * (color * 1.1 + 0.12) * (0.3 + 0.7 * room);
     }
     color += hazeWarm * (color + 0.15);
 

@@ -111,6 +111,7 @@ public class Blasts{
         Events.run(Trigger.update, Blasts::watchShells);
         Events.run(Trigger.draw, Blasts::flashes);
         Events.run(Trigger.draw, Blasts::scorches);
+        Events.run(Trigger.draw, Blasts::dust);
         int wrapped = 0;
         for(java.lang.reflect.Field field : Fx.class.getFields()){
             if(field.getType() != Effect.class || !field.getName().toLowerCase().contains("xplosion")) continue;
@@ -208,6 +209,50 @@ public class Blasts{
                 float angle = Mathf.randomSeed(seed + 10L + s) * 360f, len = r * (0.8f + 0.9f * Mathf.randomSeed(seed + 40L + s));
                 float w = r * (0.30f + 0.20f * Mathf.randomSeed(seed + 70L + s));
                 Draw.rect(soft, x + Angles.trnsx(angle, len * 0.5f), y + Angles.trnsy(angle, len * 0.5f), len * 1.1f, w, angle);
+            }
+        }
+        Draw.color();
+    }
+
+    private static final Color dustColor = new Color();
+
+    /**
+     * Dust thrown up off the ground by a large explosion: a ring of soft clouds in the colour of the ground there,
+     * that runs outwards from the blast, slowing, and settles. (Small bursts throw none.)
+     */
+    private static void dust(){
+        if(!Core.settings.getBool(ShaderMod.blastsOn, true)) return;
+        float strength = ShaderMod.percent(ShaderMod.blastsDust, 100);
+        if(strength <= 0f) return;
+        TextureRegion soft = Core.atlas.find("circle-shadow");
+        if(!soft.found()) return;
+        Rect view = Core.camera.bounds(Tmp.r2);
+        Draw.z(Layer.debris + 0.5f);
+        for(int i = 0; i < kept; i++){
+            float far = blastR[i];
+            if(blastId[i] == 0 || far < 30f) continue;
+            float age = Time.time - blastAt[i], life = 70f + far * 0.6f;
+            if(age < 0f || age > life) continue;
+            float x = blastX[i], y = blastY[i], reach = far * 0.8f;
+            if(!view.overlaps(x - reach * 1.3f, y - reach * 1.3f, reach * 2.6f, reach * 2.6f)) continue;
+            var tile = Vars.world.tileWorld(x, y);
+            // none over water and other liquids (no dust to throw up there)
+            if(tile == null || tile.floor().isLiquid) continue;
+            float k = age / life;
+            // out fast, then slowing (ease out), and fading as it settles
+            float r = reach * (0.25f + 0.85f * (1f - (1f - k) * (1f - k) * (1f - k)));
+            float a = Mathf.clamp(age / 5f) * (1f - k) * (1f - k) * Math.min(strength, 2f);
+            // (lighter than the ground: the map colour alone is a shade darker than the tiles, and the ring read as soot)
+            dustColor.set(tile.floor().mapColor).lerp(0.93f, 0.89f, 0.80f, 1f, 0.7f);
+            long seed = (long)(x * 31f) * 73856093L ^ (long)(y * 17f) * 19349663L;
+            int clouds = 24 + (int)(far / 4f);
+            for(int c = 0; c < clouds; c++){
+                float ang = c * 360f / clouds + (Mathf.randomSeed(seed + c) - 0.5f) * 20f;
+                float rr = r * (0.85f + 0.3f * Mathf.randomSeed(seed + 100L + c));
+                float size = (10f + far * 0.25f) * (0.7f + 0.6f * Mathf.randomSeed(seed + 200L + c)) * (0.8f + 0.7f * k);
+                dustColor.a = 0.55f * a * (0.6f + 0.4f * Mathf.randomSeed(seed + 300L + c));
+                Draw.color(dustColor);
+                Draw.rect(soft, x + Angles.trnsx(ang, rr), y + Angles.trnsy(ang, rr), size * 1.6f, size, ang + 90f);
             }
         }
         Draw.color();
