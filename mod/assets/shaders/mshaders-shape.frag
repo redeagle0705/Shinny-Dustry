@@ -35,6 +35,11 @@ uniform float u_band;          // strength of the drifting sun band
 uniform float u_bandWave;      // 2 = sun through gaps in clouds, 1 = a winding band at random, 0 = straight bands one after another
 uniform float u_time;          // seconds
 uniform float u_metal;         // how much the top of the gloss scale is shaded as metal: 0 = polished only, 1 = metal
+uniform sampler2D u_gloss;     // per tile: green = how wet with rain the block is, blue = how deep water stands on it (Wetness.java)
+uniform float u_wetOn;         // 1 when u_gloss is bound (blocks, while something is wet)
+uniform vec2 u_tiles;          // map size in tiles
+uniform float u_rain;          // how much it rains on the blocks now: drops splash on wet blocks
+uniform float u_standing;      // 1 for what stands still (not a turret head, which turns: no puddles or runoff on it)
 
 uniform float u_own;           // 1 while units are shaded and a unit is not to be lit by the glow it carries itself
 uniform float u_coreOwn;       // 1 while buildings are shaded and a core is not to be lit by its own light
@@ -142,8 +147,127 @@ float sunBand(vec2 world, vec2 dir, float t){
     return (0.6 + 0.4 * h2) * pow(0.5 + 0.5 * sin(p * 6.2832), 20.0 + 20.0 * h2);
 }
 
-void main(){
-    vec2 world = v_texCoords * u_resolution + u_campos;
+// Drops of rain splashing on a wet block (the same as in mshaders-post.frag).
+float rainDrops(vec2 world, float time, float rain){
+    vec2 cell = floor(world / 1.5);
+    // (no sine: far from the map's origin its precision runs out - cloudHash)
+    float h1 = cloudHash(cell);
+    float h2 = cloudHash(cell + 17.3);
+    if(h1 > rain * 0.22) return 0.0;
+    float phase = fract(time * (0.55 + 0.5 * h2) + h2 * 7.31);
+    vec2 inCell = world / 1.5 - cell - 0.5;
+    float speck = 1.0 - smoothstep(0.18, 0.42, length(inCell));
+    return speck * smoothstep(0.0, 0.03, phase) * (1.0 - smoothstep(0.03, 0.16, phase));
+}
+
+// Rain on a sloping face, as it really goes: a drop sits a while, then slides a little way down in a jerk and stops
+// again; its path wanders from side to side; a thin wet trail stays behind it and fades; here and there a bead just
+// hangs. (Straight streaks all sliding one way at one pace looked wrong - "doesn't it go a bit, get stuck, twist?")
+// "down" = the way down the face (length 1), world units. Above 0 a bright bead or trail, below 0 its darker rim.
+float wander(float x, float seed){
+    float i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(cloudHash(vec2(i, seed)), cloudHash(vec2(i + 1.0, seed)), f) - 0.5;
+}
+
+float bead(vec2 at){
+    float d = length(at);
+    float body = 1.0 - smoothstep(0.22, 0.40, d);
+    float rim = smoothstep(0.30, 0.42, d) * (1.0 - smoothstep(0.42, 0.56, d));
+    return body - rim * 0.45;
+}
+
+// A bead that has run off its slope onto a flat part: it no longer stands up as a drop (no bright body, no rim),
+// it spreads into the film of water as a faint flat patch. (Drawn as the bead made larger, it looked like one big drop.)
+float soakPatch(vec2 at){
+    return (1.0 - smoothstep(0.15, 0.55, length(at))) * 0.30;
+}
+
+// One lane of running water at this point. Returns its wet trail here; "local" = where this point lies from the lane's
+// bead (in the bead's own measure: far away = no bead near), "center" = the bead's middle, world units. The caller
+// decides whether the bead shows: it is drawn whole while its middle is on its slope (cut off at the edge of the
+// sloping face it looked chopped off), and spreads out and fades for a little way past the foot of the slope.
+float runoffLane(vec2 world, vec2 down, float time, out vec2 local, out vec2 center){
+    vec2 side = vec2(-down.y, down.x);
+    const float W = 1.6;                          // how far apart the lanes are, world units
+    float across = dot(world, side) / W, along = dot(world, down);
+    float lane = floor(across);
+    float h = cloudHash(vec2(lane, 3.1)), h2 = cloudHash(vec2(lane, 9.7)), h3 = cloudHash(vec2(lane, 5.3));
+    float kind = cloudHash(vec2(lane, 13.9));
+    local = vec2(99.0);
+    center = world;
+    if(h >= 0.6) return 0.0;
+    // the path winds: a slow sway and a smaller quick one
+    float path = 0.5 + wander(along / 2.4, lane) * 0.42 + wander(along / 0.9, lane + 50.0) * 0.14;
+    float d = (fract(across) - path) * W;
+    // Each lane has a drop of its own kind ("can the drops differ - one that runs down fast?"):
+    //   a runner (some 15%) slides down without stopping, drawn out long, a long trail behind it;
+    //   a heavy one (some 20%) is bigger, waits longer and then slides further;
+    //   the rest stop and go, each its own size.
+    // A drop that slides is drawn out into a tear, round in front and thin behind; at rest it is round.
+    float size, slid, moving, trailLen, trailK;
+    if(kind < 0.15){
+        size = 0.8 + 0.25 * h3;
+        slid = time * (2.4 + 2.0 * h3) + h2 * 30.0;
+        moving = 1.0;
+        trailLen = 6.0 + 5.0 * h3;
+        trailK = 0.5;
+    }else{
+        bool heavy = kind < 0.35;
+        size = heavy ? 1.1 + 0.15 * h3 : 0.7 + 0.35 * h3;
+        // stop and go: each stretch of time it waits, then slides (each time a different wait and pace)
+        float u = time * (heavy ? 0.14 + 0.12 * h3 : 0.22 + 0.30 * h3) + h2 * 5.0;
+        float k = floor(u), f = fract(u);
+        float wait = (heavy ? 0.55 : 0.35) + (heavy ? 0.3 : 0.5) * cloudHash(vec2(lane, k + 0.5));
+        float go = smoothstep(wait, 1.0, f);
+        slid = (k + go) * (heavy ? 3.0 + 2.0 * h : 1.4 + 1.6 * h);
+        // how fast it is going now, 0 .. 1 (the slope of that smoothstep)
+        float x = clamp((f - wait) / (1.0 - wait), 0.0, 1.0);
+        moving = 4.0 * x * (1.0 - x);
+        trailLen = heavy ? 4.0 + 4.0 * h3 : 2.5 + 4.0 * h3;
+        trailK = heavy ? 0.45 : 0.35;
+    }
+    float stretch = 10.0 + 8.0 * h2;              // one drop to each stretch of the lane
+    float da = mod(along - slid + stretch * 0.5, stretch) - stretch * 0.5;
+    // drawn out along the way down while it moves; the part behind its middle the more so (a tear)
+    float tear = 1.0 + 0.9 * moving;
+    float along2 = da * 0.85 / (size * (da < 0.0 ? tear * (1.0 + 0.5 * moving) : 1.0 + 0.15 * moving));
+    local = vec2(along2, d / (size * (1.0 - 0.15 * moving)));
+    center = world - down * da - side * d;
+    // the wet trail up the path it came down, fading
+    if(da < -0.2 * size && da > -trailLen) return (1.0 - smoothstep(0.05, 0.16, abs(d))) * (1.0 + da / trailLen) * trailK;
+    return 0.0;
+}
+
+// Beads that just sit, on sloping and flat faces alike.
+float restingBeads(vec2 world){
+    vec2 cell = floor(world / 2.6);
+    if(cloudHash(cell + 71.0) >= 0.10) return 0.0;
+    vec2 at = (vec2(cloudHash(cell + 3.3), cloudHash(cell + 8.8)) * 0.6 + 0.2 + cell) * 2.6;
+    return bead((world - at) * 1.15) * 0.8;
+}
+
+float puddleAt(vec2 world, float depth){
+    vec2 p = world / 3.2, i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float big = mix(mix(cloudHash(i), cloudHash(i + vec2(1.0, 0.0)), f.x), mix(cloudHash(i + vec2(0.0, 1.0)), cloudHash(i + vec2(1.0, 1.0)), f.x), f.y);
+    p = world / 1.1; i = floor(p); f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float small = mix(mix(cloudHash(i + 31.0), cloudHash(i + vec2(32.0, 31.0)), f.x), mix(cloudHash(i + vec2(31.0, 32.0)), cloudHash(i + vec2(32.0, 32.0)), f.x), f.y);
+    float n = big * 0.7 + small * 0.3;
+    float th = 1.05 - depth * 0.95;
+    return smoothstep(th, th + 0.08, n);
+}
+
+// Which way the face leans at that place of the picture (texture coordinates): the sideways part of its normal; none
+// where nothing is drawn, or where the lean comes from a height map (it is not worked out here).
+vec2 tiltAt(vec2 tc){
+    vec4 m = texture2D(u_texture, tc);
+    if(m.a < 0.02 || m.b <= BETWEEN * m.a) return vec2(0.0);
+    return m.rg / m.a * 2.0 - 1.0;
+}
+
+void main(){    vec2 world = v_texCoords * u_resolution + u_campos;
     vec4 m = texture2D(u_texture, v_texCoords);
     // Along the outline of a sprite that is drawn enlarged and smoothed (the head of a turret seen close up) its colour
     // fades into what is behind it over the width of one sprite pixel, and so does the cover of its map. The shading
@@ -203,7 +327,20 @@ void main(){
     //                polished: the sun and each lamp show in it as a bright patch (gathered in "spark", in the lamps'
     //                colours), and a streak of sky lies across it;
     //   tight        how small those patches are: wide and soft at low gloss, small and hard on polished metal.
-    float keen = pow(4.0, gloss * 2.0 - 1.0), much = gloss * 2.0, mirror = gloss * sqrt(gloss), tight = mix(6.0, 48.0, gloss);
+    // A block wet with rain: a film of water on it shines as a half polished face at the least - a sheen, the sky
+    // and the lamps mirrored in it - but it does not turn the face to metal (that stays what the block is made of).
+    // (with the glint on only, as for the blocks without a map: mshaders-post.frag draws their wetness in its glint)
+    vec4 water = u_wetOn > 0.5 && u_glint > 0.001 ? texture2D(u_gloss, (floor((world + 4.0) / 8.0) + 0.5) / u_tiles) : vec4(0.0);
+    float wet = water.g;
+    // under a turret or mass driver (alpha below 255) water runs and stands only once its head has kept still a while
+    // (laid out on the ground under a turning head it flickered over it): 128 .. 254 = not .. quite still
+    float steady = water.a < 0.998 ? clamp((water.a * 255.0 - 128.0) / 126.0, 0.0, 1.0) : 1.0;
+    // Where the face slopes the rain runs down it (n.xy points downhill); where it is flat the water stands, in
+    // puddles that spread the deeper it is (blue, Wetness.pool) - a puddle is a mirror lying flat.
+    float slope = length(n.xy), even = 1.0 - smoothstep(0.10, 0.35, slope);   // ("flat" is a word GLSL keeps for itself)
+    float puddle = steady > 0.01 && water.b > 0.02 ? puddleAt(world, water.b) * even * steady : 0.0;
+    float shiny = mix(mix(gloss, max(gloss, 0.72), wet), max(gloss, 0.97), puddle);
+    float keen = pow(4.0, shiny * 2.0 - 1.0), much = shiny * 2.0, mirror = shiny * sqrt(shiny), tight = mix(6.0, 48.0, shiny);
     vec3 spark = vec3(0.0);
     for(int i = 0; i < MAX_LIGHTS; i++){
         if(i >= u_count) break;
@@ -323,6 +460,58 @@ void main(){
         }
     }
     if(metal > 0.003) factor = mix(factor, min(factor, METAL_TOP + (factor - METAL_TOP) * 0.4), min(metal, 1.0));
+    if(puddle > 0.01) factor *= 1.0 - 0.10 * puddle;
+    // how bright drops and running water show: the sun by day; at night the moon at the least, and the lamps (what
+    // this face gets beyond the daylight) - by night the drops were all but gone
+    float dropLight = 1.0 + max(max(level.r, max(level.g, level.b)) - (around + sun), 0.0) * 0.8;
+    // wet: a little darker, and the drops splashing on it while it rains
+    if(wet > 0.02){
+        factor *= 1.0 - 0.12 * wet;
+        if(u_rain > 0.01) factor += rainDrops(world, u_time, u_rain) * 0.30 * wet * dropLight;
+        // (not on a turret head: it turns, and beads laid out on the ground under it flickered as it did - "the drops
+        // sparkle when the turret turns")
+        if(steady > 0.01 && u_rain > 0.01){
+            float run = restingBeads(world) * 0.8;
+            // the way down: this face's own lean; where it is flat, that of the steepest face beside it (the water
+            // coming off that face crosses this flat part)
+            vec2 dir = n.xy;
+            if(slope < 0.10){
+                float best = 0.10;
+                dir = vec2(0.0);
+                vec2 st = vec2(1.2) / u_resolution;
+                for(int i = 0; i < 4; i++){
+                    vec2 o = i == 0 ? vec2(1.0, 0.0) : i == 1 ? vec2(-1.0, 0.0) : i == 2 ? vec2(0.0, 1.0) : vec2(0.0, -1.0);
+                    vec2 tl = tiltAt(v_texCoords + o * st);
+                    if(length(tl) > best){
+                        best = length(tl);
+                        dir = tl;
+                    }
+                }
+            }
+            float steep = length(dir);
+            if(steep > 0.10){
+                vec2 down = dir / steep;
+                vec2 local, center;
+                float trail = runoffLane(world, down, u_time, local, center);
+                run += trail * smoothstep(0.10, 0.35, slope);
+                if(dot(local, local) < 1.8){
+                    // the bead: whole while its middle is on a face sloping this way; just past the foot of the
+                    // slope it spreads into the film of water and fades (it was cut off at the edge of the face)
+                    vec2 ctc = (center - u_campos) / u_resolution;
+                    float on = smoothstep(0.10, 0.35, dot(tiltAt(ctc), down));
+                    float arrived = 0.0;
+                    if(on < 0.9){
+                        float up1 = smoothstep(0.10, 0.35, dot(tiltAt((center - down * 1.0 - u_campos) / u_resolution), down));
+                        float up2 = smoothstep(0.10, 0.35, dot(tiltAt((center - down * 2.0 - u_campos) / u_resolution), down));
+                        arrived = max(up1 * 0.75, up2 * 0.4) * step(0.02, texture2D(u_texture, ctc).a);
+                    }
+                    float spread = 1.0 - on;
+                    run += mix(bead(local), soakPatch(local / (1.0 + spread * 0.8)), spread) * max(on, arrived * (1.0 - 0.5 * spread));
+                }
+            }
+            factor += run * 0.32 * wet * u_rain * dropLight * steady;
+        }
+    }
     // as much of it as the map covers this pixel
     factor = mix(vec3(1.0), factor, clamp(m.a, 0.0, 1.0));
     gl_FragColor = vec4(clamp(factor, 0.0, 2.0) * 0.5, 1.0);

@@ -80,7 +80,7 @@ public class WaterFx{
             set("u_reflect", mirror ? ShaderMod.percent(ShaderMod.reflectStrength, 100) : 0f);
             super.apply(); // u_campos, u_resolution, u_time, u_noise; ends with texture unit 0 active
             set("u_wave", ShaderMod.percent(ShaderMod.waterWave, 100));
-            set("u_sparkle", ShaderMod.percent(ShaderMod.waterSparkle, 100));
+            set("u_sparkle", ShaderMod.percent(ShaderMod.waterSparkle, 100) * (1f - 0.75f * Skies.dust()));
             set("u_foam", ShaderMod.percent(ShaderMod.waterFoam, 100));
             Wakes.apply(this);
         }

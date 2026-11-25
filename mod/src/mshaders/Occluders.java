@@ -38,6 +38,14 @@ public class Occluders{
     /** A third picture: how glossy the block on each tile is (Gloss.java), red 0..255 = 0..1; 128 where no building stands. Read unfiltered. */
     private Pixmap glossPixmap;
     private Texture glossTexture;
+    /**
+     * A fourth picture: the floor of each tile, as the map shows it (its map colour), alpha 0 on water. For the sun
+     * shadows, which take after what they fall on - pale and soft on snow, where the light thrown back from all round
+     * fills them in ("shadows this sharp look odd on the snow"), deep on dark rock. Read filtered, so it changes softly
+     * from one floor to the next.
+     */
+    private Pixmap floorPixmap;
+    private Texture floorTexture;
     private boolean dirty;
     /**
      * The tiles changed since the pictures were last sent to the graphics card: the smallest rectangle that holds them.
@@ -88,7 +96,9 @@ public class Occluders{
         int height = Math.round(Heights.of(tile) / Heights.max * 255f) << 8;
         // boulders and other loose scenery: alpha 128 tells the shadow shader to give them a round shadow, not a square one
         // in the way right now? (a door only while it is shut)
-        if(!Heights.standing(tile)) return (tile.build == null && !block.isStatic() ? 0x00000080 : open) | height;
+        // (129: a boulder drawn as one plain picture, which ShadowFx.onProps shades through that picture; the shadows on
+        // blocks leave it alone. Others - seaweed, sea bushes - keep the round patch.)
+        if(!Heights.standing(tile)) return (tile.build == null && !block.isStatic() ? (ShadowFx.plainProp(block) ? 0x00000081 : 0x00000080) : open) | height;
         return (tile.build != null ? building : wall) | height;
     }
 
@@ -106,7 +116,56 @@ public class Occluders{
 
     private static int gloss(Tile tile){
         float gloss = tile.build == null ? Gloss.plain : Gloss.of(tile.block());
-        return Math.round(gloss * 255f) << 24 | 0xff;
+        // under a turret or a mass driver alpha 128 (= not known yet to keep still): its head turns, and the running
+        // water and puddles of the rain (Wetness), laid out on the ground under it, would flicker over it as it does
+        // ("the drops sparkle when the turret turns"); Wetness writes how still it is, 128 .. 254
+        return Math.round(gloss * 255f) << 24 | (tile.build != null && (tile.block() instanceof mindustry.world.blocks.defense.turrets.BaseTurret || tile.block() instanceof mindustry.world.blocks.distribution.MassDriver) ? 128 : 0xff);
+    }
+
+    /**
+     * How wet the block on that tile is and how deep water stands on it (Wetness.java), 0 .. 255 each, kept in the green and blue of the gloss picture: a block wet
+     * with rain shines as a glossy one does. Sent with the rest at the start of the next frame.
+     */
+    public void wet(int x, int y, int amount, int depth, float steady){
+        wet(x, y, amount, depth, steady, -1);
+    }
+
+    /**
+     * @param open for a tile at the edge of the map's own walls, which of its sides face open ground (1 = up, 2 = right,
+     *             4 = down, 8 = left): alpha 64 + that. The shaders slope a band along those sides outwards - the bevel
+     *             such a wall is drawn with - and keep the rest flat, so the rain runs off the edge. -1 = not such a tile.
+     */
+    public void wet(int x, int y, int amount, int depth, float steady, int open){
+        if(glossPixmap == null || x < 0 || y < 0 || x >= glossPixmap.width || y >= glossPixmap.height) return;
+        int at = glossPixmap.get(x, y), now = at & 0xff0000ff | (amount & 0xff) << 16 | (depth & 0xff) << 8;
+        // under a head that turns: alpha 128 .. 254 = how still it is (Wetness.steadiness); 255 = nothing turns here
+        if(steady >= 0f) now = now & 0xffffff00 | 128 + Math.round(Math.min(steady, 1f) * 126f);
+        else if(open >= 0) now = now & 0xffffff00 | 64 + (open & 15);
+        if(now == at) return;
+        glossPixmap.set(x, y, now);
+        changedAt(x, y);
+    }
+
+    /**
+     * How glossy the block on that tile is, lowered by f (0 = as it is made, 1 = matt): spores settled on it dull it
+     * (SnowCover.dull). The red of the gloss picture; the rest is kept.
+     */
+    public void dull(int x, int y, float f){
+        if(glossPixmap == null || x < 0 || y < 0 || x >= glossPixmap.width || y >= glossPixmap.height) return;
+        Tile tile = Vars.world.tile(x, y);
+        if(tile == null) return;
+        int base = gloss(tile) >>> 24;
+        int r = Math.round(base * (1f - Math.max(0f, Math.min(f, 1f))));
+        int at = glossPixmap.get(x, y), now = at & 0x00ffffff | (r & 0xff) << 24;
+        if(now == at) return;
+        glossPixmap.set(x, y, now);
+        changedAt(x, y);
+    }
+
+    /** @return how wet the block on that tile was last set to be, 0 .. 255 */
+    public int wetAt(int x, int y){
+        if(glossPixmap == null || x < 0 || y < 0 || x >= glossPixmap.width || y >= glossPixmap.height) return 0;
+        return glossPixmap.get(x, y) >>> 16 & 0xff;
     }
 
     private void rebuild(){
@@ -117,21 +176,27 @@ public class Occluders{
         if(shapePixmap != null) shapePixmap.dispose();
         if(glossTexture != null) glossTexture.dispose();
         if(glossPixmap != null) glossPixmap.dispose();
-        texture = shapeTexture = glossTexture = null;
-        pixmap = shapePixmap = glossPixmap = null;
+        if(floorTexture != null) floorTexture.dispose();
+        if(floorPixmap != null) floorPixmap.dispose();
+        texture = shapeTexture = glossTexture = floorTexture = null;
+        pixmap = shapePixmap = glossPixmap = floorPixmap = null;
         if(w <= 0 || h <= 0) return;
 
         pixmap = new Pixmap(w, h);
         shapePixmap = new Pixmap(w, h);
         glossPixmap = new Pixmap(w, h);
+        floorPixmap = new Pixmap(w, h);
         doors.clear();
         for(Tile tile : Vars.world.tiles){
             // row 0 of the pixmap is v = 0 of the texture, so tile y needs no flipping
             pixmap.set(tile.x, tile.y, value(tile));
             shapePixmap.set(tile.x, tile.y, shape(tile));
             glossPixmap.set(tile.x, tile.y, gloss(tile));
+            floorPixmap.set(tile.x, tile.y, floor(tile));
             if(tile.block().solidifes) doors.add(tile.pos());
         }
+        floorTexture = new Texture(floorPixmap);
+        floorTexture.setFilter(TextureFilter.linear, TextureFilter.linear);
         texture = new Texture(pixmap);
         texture.setFilter(TextureFilter.linear, TextureFilter.linear);
         shapeTexture = new Texture(shapePixmap);
@@ -161,7 +226,10 @@ public class Occluders{
         if(tile.x < 0 || tile.y < 0 || tile.x >= pixmap.width || tile.y >= pixmap.height) return;
         pixmap.set(tile.x, tile.y, value(tile));
         shapePixmap.set(tile.x, tile.y, shape(tile));
-        glossPixmap.set(tile.x, tile.y, gloss(tile));
+        // (how wet the tile is, in green, is kept: a block turned or changed in the rain flashed dry until the next
+        // pass of Wetness, which corrects a block that is gone or new within a few frames anyway)
+        glossPixmap.set(tile.x, tile.y, gloss(tile) | glossPixmap.get(tile.x, tile.y) & 0x00ffff00);
+        floorPixmap.set(tile.x, tile.y, floor(tile));
         // keep the list of doors up to date
         int pos = tile.pos();
         boolean listed = doors.contains(pos);
@@ -195,10 +263,12 @@ public class Occluders{
                 texture.draw(pixmap);
                 shapeTexture.draw(shapePixmap);
                 glossTexture.draw(glossPixmap);
+                floorTexture.draw(floorPixmap);
             }else{
                 send(texture, pixmap, fromX, fromY, w, h);
                 send(shapeTexture, shapePixmap, fromX, fromY, w, h);
                 send(glossTexture, glossPixmap, fromX, fromY, w, h);
+                send(floorTexture, floorPixmap, fromX, fromY, w, h);
             }
             Clock.end();
             dirty = false;
@@ -214,6 +284,19 @@ public class Occluders{
     /** @return how glossy the block on each tile is, brought up to date; null when there is no world */
     public Texture gloss(){
         return texture() == null ? null : glossTexture;
+    }
+
+    /** @return the floor of each tile (see floorPixmap), brought up to date; null when there is no world */
+    public Texture floors(){
+        return texture() == null ? null : floorTexture;
+    }
+
+    /** What the floor picture says about a tile: its floor's map colour, alpha 0 on water (no snow lies there). */
+    private static int floor(Tile tile){
+        var floor = tile.floor();
+        Color c = floor.mapColor;
+        boolean wet = floor.isLiquid || floor.cacheLayer == CacheLayer.water;
+        return Color.rgba8888(c.r, c.g, c.b, wet ? 0f : 1f);
     }
 
     /** @return the outlines those blocks have (Silhouettes.java), for where the sun is now; null while there are none */

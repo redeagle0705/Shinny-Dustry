@@ -246,6 +246,9 @@ public class FloorFx{
     Texture kinds(){
         if(texture == null || pixmap.width != Vars.world.width() || pixmap.height != Vars.world.height()) rebuild();
         if(texture != null && dirty){
+            // an upload binds the picture to the active texture unit: to 2, where the ground shader puts it anyway (on
+            // whichever unit happened to be active it could take the place of another effect's picture for the frame)
+            Gl.activeTexture(Gl.texture2);
             texture.draw(pixmap);
             dirty = false;
         }

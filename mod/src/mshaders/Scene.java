@@ -239,6 +239,11 @@ public class Scene{
         return ready() ? occluders.texture() : null;
     }
 
+    /** The floor of each tile, its map colour (Occluders.floors), one texel per tile; null without a loaded map. */
+    public Texture floors(){
+        return ready() ? occluders.floors() : null;
+    }
+
     /** Which blocks are not drawn as full squares, and where their outline is kept (Occluders.java), one texel per tile; null without a loaded map. */
     public Texture shapes(){
         return ready() ? occluders.shapes() : null;
@@ -354,7 +359,7 @@ public class Scene{
                     set(this, "u_own", shapingUnits && !Core.settings.getBool(ShaderMod.normalsOwnLight, false) ? 1f : 0f);
                     // ... and neither is a core by the light in its middle (the same setting)
                     set(this, "u_coreOwn", !shapingUnits && !Core.settings.getBool(ShaderMod.normalsOwnLight, false) ? 1f : 0f);
-                    set(this, "u_glint", wantGlint ? ShaderMod.percent(ShaderMod.glintStrength, 100) : 0f);
+                    set(this, "u_glint", wantGlint ? ShaderMod.percent(ShaderMod.glintStrength, 100) * Skies.sunThrough() : 0f);
                     set(this, "u_band", ShaderMod.percent(ShaderMod.glintBand, 100));
                     set(this, "u_bandWave", (float)Core.settings.getInt("mshaders-band-style", 2));
                     set(this, "u_time", Time.globalTime / 60f);
@@ -367,6 +372,16 @@ public class Scene{
                     sendLights(this, squared ? squareCount : shapeLit ? lightCount : 0);
                     setCamera(this);
                     if(hasUniform("u_tiles")) setUniformf("u_tiles", Vars.world.width(), Vars.world.height());
+                    // blocks wet with rain (Wetness: the green of the gloss picture); not the units, which only fly over them
+                    Texture glossy = !shapingUnits && (Wetness.wet > 0.004f || Wetness.pool > 0.004f) ? occluders.gloss() : null;
+                    if(glossy != null) glossy.bind(5);
+                    set(this, "u_gloss", 5);
+                    set(this, "u_wetOn", glossy != null ? 1f : 0f);
+                    set(this, "u_rain", Wetness.raining);
+                    // a turret head turns and recoils: puddles and runoff, laid out on the ground, would slide over it
+                    set(this, "u_standing", shapeFrom == headNormals ? 0f : 1f);
+                    // the sprite batch binds its own picture next, to the active unit
+                    Gl.activeTexture(Gl.texture0);
                 }
             };
             tintShader = new Shader(vert, Vars.tree.get("shaders/mshaders-tint.frag").readString()){
@@ -429,18 +444,18 @@ public class Scene{
                     sendLights(this, squared ? squareCount : lightCount);
                 }
             };
-            scene = new FrameBuffer();
-            objects = new FrameBuffer();
-            light = new FrameBuffer();
-            aim = new FrameBuffer();
-            before = new FrameBuffer();
-            glow = new FrameBuffer();
-            after = new FrameBuffer();
-            gameLight = new FrameBuffer();
-            near = new FrameBuffer();
-            air = new FrameBuffer();
-            open = new FrameBuffer();
-            airLit = new FrameBuffer();
+            scene = keep(new Kept());
+            objects = keep(new Kept());
+            light = keep(new Kept());
+            aim = keep(new Kept());
+            before = keep(new Kept());
+            glow = keep(new Kept());
+            after = keep(new Kept());
+            gameLight = keep(new Kept());
+            near = keep(new Kept());
+            air = keep(new Kept());
+            open = keep(new Kept());
+            airLit = keep(new Kept());
             lit = gameLight;
             airShader = new Shader(vert, Vars.tree.get("shaders/mshaders-air.frag").readString()){
                 @Override
@@ -453,13 +468,13 @@ public class Scene{
                     set(this, "u_plain", airPlain ? 1f : 0f);
                 }
             };
-            normals = new FrameBuffer();
-            headNormals = new FrameBuffer();
+            normals = keep(new Kept());
+            headNormals = keep(new Kept());
             shapeFrom = normals;
             // drawn with the sprite batch, so with the vertex shader the batch uses
             normalShader = new Shader(Vars.tree.get("shaders/default.vert").readString(), Vars.tree.get("shaders/mshaders-normals.frag").readString());
             itemShader = new Shader(Vars.tree.get("shaders/default.vert").readString(), Vars.tree.get("shaders/mshaders-items.frag").readString());
-            raw = new FrameBuffer();
+            raw = keep(new Kept());
             for(FrameBuffer b : new FrameBuffer[]{objects, light, aim, before, after, glow, gameLight, raw, near, air, open, airLit}){
                 b.getTexture().setFilter(TextureFilter.linear, TextureFilter.linear);
             }
@@ -497,7 +512,18 @@ public class Scene{
         Events.run(Trigger.preDraw, () -> {
             if(Vars.state.isGame()){
                 Gl.activeTexture(Gl.texture0);
+                // how wet the blocks are: written into the gloss picture, sent just below
+                Wetness.update(occluders);
+                // and how far spores settled on them have dulled them (the red of the same picture)
+                SnowCover.dull(occluders);
                 occluders.texture();
+                // The outlines too (Silhouettes): they are worked out again and uploaded whenever the sun moves a step.
+                // Done by the first effect to ask in the middle of the frame - the sun shadows, just after binding the
+                // lamps' light to unit 2 - the outlines took the lamps' place: for that frame the whole screen read as
+                // lit, and the sun shadows were gone. Each step of the turning sun one frame blinked ("it sparkles only
+                // while the shadows turn"; it stopped with "light stopped by blocks" off, which brings in the lamps' light).
+                occluders.outlines();
+                Gl.activeTexture(Gl.texture0);
             }
         });
         Events.run(Trigger.preDraw, this::begin);
@@ -931,7 +957,55 @@ public class Scene{
         Draw.rect(icon, unit.x - ShaderMod.sunX() * drop, unit.y - ShaderMod.sunY() * drop, unit.rotation - 90f);
     }
 
+    /**
+     * A picture of the frame that remembers when it was last drawn into. One not drawn into for some ten seconds (its
+     * effect switched off, or nothing of it in view) is shrunk to nothing, and grows again the next time it is used:
+     * kept at full size, every picture an effect had once used stayed in memory with that effect off (friends of the
+     * maker: "the mod takes memory as it loads - make it lighter").
+     */
+    static class Kept extends FrameBuffer{
+        long used;
+
+        @Override
+        public void begin(){
+            used = Core.graphics.getFrameId();
+            super.begin();
+        }
+
+        @Override
+        public void beginBind(){
+            used = Core.graphics.getFrameId();
+            super.beginBind();
+        }
+
+        // Read counts as use too: some pictures are drawn once and then read frame after frame (the lamps' light the
+        // shadows read, the mirror image of the last frame). Counting only drawing, they were shrunk away under the
+        // effects still reading them, and every ten seconds the shadows blinked ("as if the shadow were wiped and
+        // drawn again").
+        @Override
+        public Texture getTexture(){
+            used = Core.graphics.getFrameId();
+            return super.getTexture();
+        }
+    }
+
+    private final arc.struct.Seq<Kept> kept = new arc.struct.Seq<>();
+
+    private Kept keep(Kept b){
+        kept.add(b);
+        return b;
+    }
+
+    private void shrinkUnused(){
+        long frame = Core.graphics.getFrameId();
+        if(frame % 60 != 0) return;
+        for(Kept b : kept){
+            if(frame - b.used > 600 && (b.getWidth() > 2 || b.getHeight() > 2)) b.resize(2, 2);
+        }
+    }
+
     private void end(){
+        shrinkUnused();
         if(!capturing) return;
         capturing = false;
         scene.end();
@@ -1384,6 +1458,11 @@ public class Scene{
     private void coverUnit(Unit unit){
         TextureRegion icon = unit.type.fullIcon;
         if(icon == null || !icon.found() || !unit.isValid() || unit.inFogTo(Vars.player.team())) return;
+        // red 1; green = 0.86 + 0.14 * how large the unit is (a block of three tiles and up = 1): the drops running down
+        // it are drawn that much smaller ("make the drops as small as the unit"); blue = 0.5 + half of how still it is
+        // (Wetness.unitStill): rain runs down a unit that has kept still a while. (mshaders-post.frag: red near 1
+        // together with green above 0.85 is no normal, so a unit is told apart.)
+        Draw.mixcol(Tmp.c3.set(1f, 0.86f + 0.14f * arc.math.Mathf.clamp(unit.hitSize / 24f, 0.25f, 1f), 0.5f + 0.5f * Wetness.unitStill(unit), 1f), 1f);
         Draw.rect(icon, unit.x, unit.y, unit.rotation - 90f);
     }
 
@@ -1476,7 +1555,10 @@ public class Scene{
         set(s, "u_spare", post && haze ? Math.min(Math.max(ShaderMod.percent(ShaderMod.spare, 100), 0f), 1f) : 0f);
 
         set(s, "u_light", lightReady ? ShaderMod.percent(ShaderMod.lightsStrength, 100) : 0f);
-        set(s, "u_glint", glintReady ? ShaderMod.percent(ShaderMod.glintStrength, 100) : 0f);
+        // the game has drawn its own lights (and darkness) into the picture: a dark map (the spore halo reads lamps off the picture then)
+        set(s, "u_gameLit", (tap != null ? tap.gameLighting() : Vars.renderer.lights.enabled()) ? 1f : 0f);
+        // (dimmed while sand blows: the sun comes through the dust weaker - Skies.sunThrough)
+        set(s, "u_glint", glintReady ? ShaderMod.percent(ShaderMod.glintStrength, 100) * Skies.sunThrough() : 0f);
         set(s, "u_aimed", aimReady ? 1f : 0f);
         set(s, "u_band", ShaderMod.percent(ShaderMod.glintBand, 100));
         set(s, "u_bandWave", (float)Core.settings.getInt("mshaders-band-style", 2));
@@ -1488,6 +1570,8 @@ public class Scene{
         Pulses.apply(s);
         HeatHaze.apply(s);
         Daytime.apply(s);
+        Clouds.apply(s);
+        Skies.applyComposite(s);
         if(lightReady){
             (lightmapNow != null ? lightmapNow : light).getTexture().bind(1);
             set(s, "u_lightmap", 1);
@@ -1514,6 +1598,8 @@ public class Scene{
         if(glossy != null) glossy.bind(7);
         set(s, "u_gloss", 7);
         set(s, "u_glossy", glossy != null ? 1f : 0f);
+        set(s, "u_rain", Wetness.raining);
+        set(s, "u_unitWet", Wetness.on() ? Wetness.wet : 0f);
         // blocks with a normal map: their shading was laid on in the middle of the frame (shapePass); here the map only
         // tells the glint which way a face points
         // ... and where a unit is: the glint guessed for the blocks is not for what flies over them (unitCover)

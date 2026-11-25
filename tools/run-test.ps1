@@ -1,4 +1,4 @@
-# Runs the official v160.7 desktop jar (not the Steam game) with its own data folder inside this project and takes screenshots.
+# Runs the official desktop jar, v160.8 or v160.7 (not the Steam game) with its own data folder inside this project and takes screenshots.
 # Usage: powershell -ExecutionPolicy Bypass -File tools\run-test.ps1 -Mods mshaders,mshaders-testkit -Out screenshots\run1 -Shots "name|key=value,...;name2|..."
 #   -Mods   files from build\ (without extension) to put into the test profile's mods folder; everything else there is removed first
 #   -Shots  see testkit\src\mstest\TestKit.java.  Without -Shots the game just opens (play by hand, close it yourself).
@@ -18,8 +18,9 @@ if (-not (Test-Path $paths)) { throw "tools\local.ps1 not found: copy tools\loca
 . $paths
 $jar = $LocalGameJar   # never changed
 $java = Join-Path $LocalJdkBin "javaw.exe"
-$expected = "36d94941a1639478ad1d9be25a9d802c6f77552f400c6da0338b7b019f63a0d1"
-if ((Get-FileHash -Algorithm SHA256 $jar).Hash.ToLower() -ne $expected) { throw "Mindustry.jar is not the official v160.7 release" }
+# SHA-256 of the official releases (github.com/Anuken/Mindustry): v160.7, v160.8
+$expected = @("36d94941a1639478ad1d9be25a9d802c6f77552f400c6da0338b7b019f63a0d1", "6dd6da921d5021a84823456e05b477ee8de8511990d40de850b37dd0905152f2")
+if ($expected -notcontains (Get-FileHash -Algorithm SHA256 $jar).Hash.ToLower()) { throw "Mindustry.jar is not an official v160.7 or v160.8 release" }
 
 $profileDir = Join-Path $root "profile"
 $appdata = Join-Path $profileDir "appdata"

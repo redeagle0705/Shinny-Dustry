@@ -89,18 +89,43 @@ public class HitHeat{
             if(a <= 0.005f) continue;
             // over the block (over a turret's head too), in its own shape: first the colour of hot metal laid over it,
             // then a glow added (added alone, red on a blue wall came out pink)
-            Draw.z(build.block instanceof BaseTurret ? Layer.turretHeat + 0.1f : Layer.blockOver + 0.4f);
-            c.a = Math.min(a * 1.2f, 0.95f);
-            Draw.color(c);
-            Draw.rect(build.block.fullIcon, build.x, build.y);
-            Draw.blend(Blending.additive);
-            c.a = a * 0.5f;
-            Draw.color(c);
-            Draw.rect(build.block.fullIcon, build.x, build.y);
-            Draw.blend();
+            // (drawn as the game draws the block: a turret's head as it is turned - the icon put the head back to where
+            // it points when built, "the turret seemed to turn back after it was hit")
+            if(build instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild){
+                // a turret in two: its base just under the head (the head covers it, as it covers the base itself),
+                // then the head - drawn together, the glow was added twice where the head lies on the base
+                Draw.z(Layer.turret - 0.4f);
+                glowOver(build, a, true);
+                Draw.z(Layer.turretHeat + 0.1f);
+                glowOver(build, a, false);
+            }else{
+                Draw.z(build.block instanceof BaseTurret ? Layer.turretHeat + 0.1f : Layer.blockOver + 0.4f);
+                c.a = Math.min(a * 1.2f, 0.95f);
+                Draw.color(c);
+                SnowCover.drawPicture(build);
+                Draw.blend(Blending.additive);
+                c.a = a * 0.5f;
+                Draw.color(c);
+                SnowCover.drawPicture(build);
+                Draw.blend();
+            }
             c.a = a;
             if(lights && a > 0.05f) Vars.renderer.lights.add(build.x, build.y, size * 1.6f, c, a * 0.5f);
         }
         Draw.color();
+    }
+
+    /** The colour of hot metal and its glow over a turret's base or its head (colour in c, how hot in a). */
+    private static void glowOver(mindustry.gen.Building build, float a, boolean base){
+        c.a = Math.min(a * 1.2f, 0.95f);
+        Draw.color(c);
+        if(base) SnowCover.drawTurretBase(build);
+        else SnowCover.drawTurretHead(build);
+        Draw.blend(Blending.additive);
+        c.a = a * 0.5f;
+        Draw.color(c);
+        if(base) SnowCover.drawTurretBase(build);
+        else SnowCover.drawTurretHead(build);
+        Draw.blend();
     }
 }

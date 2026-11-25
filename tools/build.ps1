@@ -24,6 +24,19 @@ function Build-JavaMod([string]$name, [string]$dir, [string]$meta = "") {
     Copy-Item $meta (Join-Path $classes "mod.hjson")
     $assets = Join-Path $dir "assets"
     if (Test-Path $assets) { Copy-Item -Recurse -Force (Join-Path $assets "*") $classes }
+    # A normal map not drawn yet - still the very same picture as the base sprite next to it in sprites-override, put
+    # there to draw on - is left out: read as a normal map, its colours would shade that block or unit at random.
+    $normals = Join-Path $classes "normals"
+    if (Test-Path $normals) {
+        Get-ChildItem -Recurse -File $normals | ForEach-Object {
+            $rel = $_.FullName.Substring($normals.Length + 1)
+            $base = Join-Path (Join-Path $assets "sprites-override") $rel
+            if ((Test-Path $base) -and ((Get-FileHash $_.FullName).Hash -eq (Get-FileHash $base).Hash)) {
+                Remove-Item -Force $_.FullName
+                Write-Output "left out (not drawn yet): normals\$rel"
+            }
+        }
+    }
     $out = Join-Path $build "$name.jar"
     if (Test-Path $out) { Remove-Item -Force $out }
     & "$jdk\jar.exe" --create --file $out -C $classes .

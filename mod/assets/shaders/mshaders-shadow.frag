@@ -45,6 +45,12 @@ const int MAX_TILES = 48;                  // tiles walked at most (about 17 til
 // Alpha 0: a plain square, or no block.
 // u_outlines (Silhouettes.java): the outlines, 16 texels per tile. green = how much the block covers there, blue = the
 // same blurred, red = how far from there towards the sun the block begins (1.0 = never, else 255 / FAR tiles).
+// What the shadow falls on (Occluders.floors): each tile's floor colour, alpha 0 on water; and the snow on the ground.
+// On a pale floor - snow above all - the light thrown back from all round fills the shadows in: they are lighter, softer
+// and blue with the sky ("the shadows are too sharp - on the snow that looks odd").
+uniform sampler2D u_floors;
+uniform float u_floored;
+uniform float u_groundSnow;
 uniform sampler2D u_shapes;
 uniform sampler2D u_outlines;
 uniform float u_shaped;       // 1 when both are bound
@@ -103,6 +109,12 @@ void main(){
     vec2 across = vec2(-light.y, light.x);            // the direction square to the light
     float halfWidth = 0.5 * (abs(across.x) + abs(across.y));   // half the width of a tile's shadow
 
+    // how pale what it falls on is: by the floor's colour, and the snow on the ground (not on water)
+    vec4 fl = u_floored > 0.5 ? texture2D(u_floors, p * u_tile) : vec4(0.3, 0.3, 0.3, 1.0);
+    float alb = dot(fl.rgb, vec3(0.299, 0.587, 0.114));
+    float bright = max(smoothstep(0.45, 0.85, alb), min(u_groundSnow * 1.2, 0.9) * fl.a);
+    // (softer edges, the more the further from the block, as a penumbra widens - up to what keeps rows seamless)
+    float spread = 0.09 * bright;
     float shade = 0.0;
     for(int i = 0; i < MAX_TILES; i++){
         vec2 uv = (cell + 0.5) * u_tile;
@@ -120,7 +132,7 @@ void main(){
                 vec2 q = p - (cell + 0.5);
                 float along = clamp(-dot(q, light), 0.0, reach);
                 float inside = 0.36 - length(q + light * along);
-                float edge = clamp(max(u_pixel * 1.5, u_soft * 0.16 + 0.04), 0.001, 0.30);
+                float edge = clamp(max(u_pixel * 1.5, u_soft * 0.16 + 0.04 + spread), 0.001, 0.30);
                 float rel = along / max(reach, 0.001);
                 shade = max(shade, min(dark, 1.0) * smoothstep(0.0, edge, inside) * (1.0 - 0.45 * rel * rel));
             }else if(shape.a > 7.0){
@@ -128,8 +140,8 @@ void main(){
                 // (Every tile of the block gives the same answer.)
                 float size = floor(shape.a / 15.0 + 0.5), where = floor(shape.b + 0.5);
                 vec2 corner = cell - vec2(floor(where / 16.0), mod(where, 16.0));   // the block's lower left corner
-                float edge = clamp(max(u_pixel * 1.5, u_soft * (0.16 + 0.10 * t) + 0.012 * t), 0.001, 0.33);
-                float tip = mix(0.04, 0.30, u_soft), cover = 0.0;
+                float edge = clamp(max(u_pixel * 1.5, u_soft * (0.16 + 0.10 * t) + 0.012 * t + spread * (1.0 + 0.5 * t)), 0.001, 0.33);
+                float tip = mix(mix(0.04, 0.30, u_soft), 0.45, bright), cover = 0.0;
                 for(int k = 0; k < 2; k++){
                     float far = toOutline(shape.rg, size, p - corner + across * edge * (k == 0 ? 0.35 : -0.35), light);
                     if(far < reach) cover += 0.5 * (1.0 - smoothstep(1.0 - tip, 1.0, far / reach)) * (1.0 - 0.45 * far * far / (reach * reach));
@@ -143,8 +155,8 @@ void main(){
                 // edges: never sharper than a screen pixel; softer with the setting, and the further from the block.
                 // Not wider than a third of a tile: the softening eats into each tile's own shadow, and two tiles
                 // side by side overlap by just over two thirds - wider, and a pale seam shows between them.
-                float edge = clamp(max(u_pixel * 1.5, u_soft * (0.16 + 0.10 * t) + 0.012 * t), 0.001, 0.33);
-                float tip = mix(0.04, 0.30, u_soft);
+                float edge = clamp(max(u_pixel * 1.5, u_soft * (0.16 + 0.10 * t) + 0.012 * t + spread * (1.0 + 0.5 * t)), 0.001, 0.33);
+                float tip = mix(mix(0.04, 0.30, u_soft), 0.45, bright);
                 float side = smoothstep(0.0, edge, margin);
                 if(side < 0.999) side = max(side, joined(cell, across * (lateral < 0.0 ? -1.0 : 1.0), t));
                 float cover = side * (1.0 - smoothstep(1.0 - tip, 1.0, rel));
@@ -209,5 +221,11 @@ void main(){
         vec3 lamp = texture2D(u_fill, gl_FragCoord.xy / u_screen).rgb;
         shade /= 1.0 + max(lamp.r, max(lamp.g, lamp.b)) * u_fillK;
     }
-    gl_FragColor = vec4(0.0, 0.0, 0.0, max(shade * u_strength, ao));
+    // On a pale floor the shadow is filled in by the light thrown back, and takes the blue of the sky: lighter and
+    // bluish on snow; on dark rock as it was, deep and black. (The rim round a block keeps more of its darkness: little
+    // light gets into that corner.)
+    shade *= 1.0 - 0.33 * bright;
+    ao *= 1.0 - 0.20 * bright;
+    vec3 tint = vec3(0.12, 0.20, 0.42) * bright;
+    gl_FragColor = vec4(tint, max(shade * u_strength, ao));
 }

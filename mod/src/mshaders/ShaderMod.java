@@ -21,9 +21,9 @@ public class ShaderMod extends Mod{
     shieldsOn = "mshaders-shields", shieldsBubble = "mshaders-shields-bubble", shieldsRipple = "mshaders-shields-ripple", shieldsLight = "mshaders-shields-light", shieldsHex = "mshaders-shields-hex", shieldsRefract = "mshaders-shields-refract", shieldsTurns = "mshaders-shields-turns", shieldsSheen = "mshaders-shields-sheen",
     shieldsCrack = "mshaders-shields-crack",
     powerOn = "mshaders-power", powerStrength = "mshaders-power-strength", factoriesOn = "mshaders-factories",
-    orePeekOn = "mshaders-ore-peek", weatherOn = "mshaders-weather", weatherStrength = "mshaders-weather-strength",
+    orePeekOn = "mshaders-ore-peek", weatherOn = "mshaders-weather", weatherStrength = "mshaders-weather-strength", weatherRain = "mshaders-weather-rain", weatherSnow = "mshaders-weather-snow", weatherSand = "mshaders-weather-sand", weatherSpore = "mshaders-weather-spore", weatherSnowPile = "mshaders-weather-snow-pile", weatherSandPile = "mshaders-weather-sand-pile", weatherSporePile = "mshaders-weather-spore-pile", weatherFog = "mshaders-weather-fog", wetOn = "mshaders-wet", cloudsOn = "mshaders-clouds", cloudsStrength = "mshaders-clouds-strength",
     heatOn = "mshaders-heat", heatStrength = "mshaders-heat-strength", beamsOn = "mshaders-beams",
-    hitHeatOn = "mshaders-hit-heat", hitHeatStrength = "mshaders-hit-heat-strength", tracksOn = "mshaders-tracks", tracksStrength = "mshaders-tracks-strength", wakesOn = "mshaders-wakes", wakesStrength = "mshaders-wakes-strength",
+    artOn = "mshaders-art", hitHeatOn = "mshaders-hit-heat", hitHeatStrength = "mshaders-hit-heat-strength", tracksOn = "mshaders-tracks", tracksStrength = "mshaders-tracks-strength", wakesOn = "mshaders-wakes", wakesStrength = "mshaders-wakes-strength",
     dayCampaign = "mshaders-day-campaign", dayOwn = "mshaders-day-own", dayMinutes = "mshaders-day-minutes", dayTint = "mshaders-day-tint",
     smokeShadowsOn = "mshaders-smoke-shadows", smokeShadowsStrength = "mshaders-smoke-shadows-strength",
     cutawayStyle = "mshaders-cutaway", cutawaySize = "mshaders-cutaway-size",
@@ -55,6 +55,7 @@ public class ShaderMod extends Mod{
      * itself cuts the page back to what it takes (MultiPacker: the smaller of the two), and all is as before.
      */
     public ShaderMod(){
+        ArtSwitch.atStart();
         try{
             mindustry.graphics.MultiPacker.PageType.main.height = Math.max(mindustry.graphics.MultiPacker.PageType.main.height, 8192);
         }catch(Throwable t){
@@ -88,7 +89,7 @@ public class ShaderMod extends Mod{
             shieldsOn, true, shieldsBubble, 100, shieldsRipple, 100, shieldsLight, 100, shieldsHex, 100, shieldsRefract, 100, shieldsTurns, true, shieldsSheen, 100, shieldsCrack, 100,
             pulsesOn, true, pulsesWave, 100, pulsesHaze, 100,
             statusesOn, true, statusesStrength, 100,
-            cutawayStyle, 1, cutawaySize, 100, orePeekOn, true, weatherOn, true, weatherStrength, 100, heatOn, true, heatStrength, 100, beamsOn, true, hitHeatOn, true, hitHeatStrength, 100, tracksOn, true, tracksStrength, 100, wakesOn, true, wakesStrength, 100, dayCampaign, true, dayOwn, false, dayMinutes, 12, dayTint, 100, smokeShadowsOn, true, smokeShadowsStrength, 100,
+            cutawayStyle, 1, cutawaySize, 100, orePeekOn, true, weatherOn, true, weatherStrength, 100, weatherRain, 100, weatherSnow, 100, weatherSand, 100, weatherSpore, 100, weatherSnowPile, 100, weatherSandPile, 100, weatherSporePile, 100, weatherFog, 100, wetOn, true, cloudsOn, false, cloudsStrength, 100, heatOn, true, heatStrength, 100, beamsOn, true, hitHeatOn, true, hitHeatStrength, 100, artOn, true, tracksOn, true, tracksStrength, 100, wakesOn, true, wakesStrength, 100, dayCampaign, true, dayOwn, false, dayMinutes, 12, dayTint, 100, smokeShadowsOn, true, smokeShadowsStrength, 100,
             powerOn, true, powerStrength, 100, factoriesOn, true,
             blastsOn, true, blastsShock, 100, blastsFlash, 100, blastsScorch, 100, blastsScorchTime, 5, blastsDust, 100,
             postOn, true, vignette, 35, saturation, 115, contrast, 108, warmth, 15, spare, 100
@@ -122,6 +123,7 @@ public class ShaderMod extends Mod{
         Beams.init();
         HitHeat.init();
         SnowCover.init();
+        Wetness.init();
         Tracks.init();
         Wakes.init();
         Pulses.init();
@@ -212,6 +214,7 @@ public class ShaderMod extends Mod{
             f.slider(glintStrength, 100, 0, 200, 5, i -> i + "%");
             f.slider(glintBand, 100, 0, 200, 5, i -> i == 0 ? off : i + "%");
             f.check(normalsOn, true);
+            f.check(artOn, true);
             f.slider(normalsStrength, 100, 0, 200, 5, i -> i + "%");
             f.slider(normalsMetal, 100, 0, 200, 5, i -> i == 0 ? off : i + "%");
             f.check(normalsHeight, true);
@@ -254,6 +257,23 @@ public class ShaderMod extends Mod{
             f.section("weather");
             f.check(weatherOn, true);
             f.slider(weatherStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            // each weather on its own: off (not drawn at all) / as the game has it / 0 .. 200 % of this mod's effects
+            // (the sliders had gone missing: only their keys and texts were left - "can the spores be off / as the
+            // game has it / 0-200% like the sand?")
+            mindustry.ui.dialogs.SettingsMenuDialog.StringProcessor level = i -> i <= Skies.levelOff ? off : i < 0 ? Core.bundle.get("mshaders.weather.game", "as the game has it") : i + "%";
+            f.slider(weatherRain, 100, Skies.levelOff, 200, 10, level);
+            f.slider(weatherSnow, 100, Skies.levelOff, 200, 10, level);
+            // how much of it lies on the ground, the blocks, the units ("can the amount spores settle, sand piles up
+            // against the blocks, snow lies on the ground be set?")
+            f.slider(weatherSnowPile, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(weatherSand, 100, Skies.levelOff, 200, 10, level);
+            f.slider(weatherSandPile, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(weatherSpore, 100, Skies.levelOff, 200, 10, level);
+            f.slider(weatherSporePile, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.slider(weatherFog, 100, Skies.levelOff, 200, 10, level);
+            f.check(cloudsOn, false);
+            f.slider(cloudsStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
+            f.check(wetOn, true);
             f.check(tracksOn, true);
             f.slider(tracksStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.check(heatOn, true);
@@ -390,6 +410,8 @@ public class ShaderMod extends Mod{
             s.put(lightsMax, Scene.maxLights);
             s.put(lightsDetail, 100);
             s.put(dayOwn, true);
+            // and the clouds seen from high up (off by default)
+            s.put(cloudsOn, true);
             return;
         }
         if(level >= 3) return;
@@ -424,7 +446,7 @@ public class ShaderMod extends Mod{
     /** Everything as it comes (every setting of the mod back to its default). */
     static void full(){
         for(String key : new String[]{glintOn, shadowQuality, smokeShadowsOn, tracksOn, wakesOn, shieldsRefract, normalsOn, reflectOn,
-            lightsUnits, heatOn, liquidsOn, shadowAo, pulsesHaze, lightsOn, weatherOn, beamsOn, hitHeatOn, waterOn, shadowOn, floorsOn,
+            lightsUnits, heatOn, liquidsOn, shadowAo, pulsesHaze, lightsOn, weatherOn, wetOn, cloudsOn, beamsOn, hitHeatOn, waterOn, shadowOn, floorsOn,
             shieldsHex, lightsDetail, lightsMax, dayOwn}){
             Core.settings.remove(key);
         }

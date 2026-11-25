@@ -95,11 +95,14 @@ public class Daytime{
         // the turn of the sun: back to the middle through the night (at midnight morning and evening meet - from one
         // side to the other it jumped by 80 degrees)
         float turn = Mathf.clamp(hour, -1f, 1f) * 40f * (e < 0f ? Mathf.clamp(1f + e / 0.3f) : 1f);
-        if(Float.isNaN(heldTurn) || Math.abs(turn - heldTurn) >= 2f) heldTurn = turn;
+        // (steps under a pixel at the tip of the longest shadow, as ShadowFx.lengthStep)
+        float lstep = ShadowFx.lengthStep();
+        float turnStep = (float)Math.toDegrees(lstep) * 0.8f;
+        if(Float.isNaN(heldTurn) || Math.abs(turn - heldTurn) >= turnStep) heldTurn = turn;
         sunX = Mathf.cosDeg(set + heldTurn);
         sunY = Mathf.sinDeg(set + heldTurn);
         float l = Mathf.clamp(0.7f / Math.max(e, 0.3f), 0.6f, 1.9f);
-        if(Float.isNaN(heldLength) || Math.abs(l - heldLength) >= 0.06f) heldLength = l;
+        if(Float.isNaN(heldLength) || Math.abs(l - heldLength) >= lstep) heldLength = l;
         length = heldLength;
     }
 

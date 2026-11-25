@@ -8,7 +8,22 @@
 // block are touched. The walk is the same as in mshaders-shadow.frag - every tile the line towards the light crosses,
 // in order - with one difference: the point is not on the ground but on top of its own block, so another block only
 // shades it by as much as it is TALLER. A block never shades itself or one of the same height.
+//
+// With PROP defined (ShadowFx.propShader) the same walk shades boulders instead: each boulder's own picture is drawn
+// again right after the boulders, black, as dark as the shadow that falls on each of its pixels - so the shadow fits
+// the boulder exactly, whatever its shape, and the ground around it is left to the ground pass. (Before, this pass
+// shaded a round patch 0.42 of a tile wide: the boulder is drawn wider than that, and in a building's shadow its
+// edge stayed lit - a pale ring.)
+#ifdef PROP
+uniform sampler2D u_texture;  // the boulder's picture (the sprite batch's texture)
+uniform sampler2D u_mask;     // the game's shadow mask, one texel per tile, white = no shadow
+#define MASK u_mask
+varying vec2 v_world;         // this point in world units
+varying vec4 v_color;         // red = the boulder's height / MAX_HEIGHT
+#else
 uniform sampler2D u_texture;  // the game's shadow mask, one texel per tile, white = no shadow
+#define MASK u_texture
+#endif
 uniform sampler2D u_heights;  // one texel per tile, blue = block height, 1.0 = MAX_HEIGHT tiles (Occluders.java)
 
 uniform vec2 u_campos;        // world position of the lower-left screen corner
@@ -18,6 +33,8 @@ uniform float u_length;       // shadow length of a block one tile tall, in tile
 uniform float u_strength;     // 1 = as dark as the built-in shadow under a block
 uniform float u_soft;         // 0 = edges as sharp as the screen allows, 1 = soft and wide
 uniform float u_pixel;        // size of one screen pixel in tiles
+uniform float u_props;        // 1 when the boulders are shaded through their own pictures (PROP)
+uniform float u_ao;           // ambient occlusion: the setting "shadows: ambient occlusion", 0 .. 2
 
 uniform sampler2D u_fill;     // light of the lamps this frame, over the whole screen (quarter size)
 uniform float u_filled;       // 1 when u_fill is bound
@@ -61,7 +78,7 @@ float toOutline(vec2 slot, float size, vec2 q, vec2 light){
 // 1 when a block stands on that tile whose shadow reaches at least t tiles at the height "own".
 float casts(vec2 cell, float t, float own){
     vec2 uv = (cell + 0.5) * u_tile;
-    if((1.0 - texture2D(u_texture, uv).r) / 0.71 < 0.05) return 0.0;
+    if((1.0 - texture2D(MASK, uv).r) / 0.71 < 0.05) return 0.0;
     return step(t, (texture2D(u_heights, uv).b * MAX_HEIGHT - own - 0.03) * u_length);
 }
 
@@ -75,13 +92,26 @@ float joined(vec2 cell, vec2 toward, float t, float own){
 }
 
 void main(){
+#ifdef PROP
+    float sprite = texture2D(u_texture, v_texCoords).a;
+    if(sprite < 0.01) discard;
+    vec2 p = (v_world + 4.0) / 8.0;                                  // this point in tiles; tile n covers n .. n + 1
+    vec2 cell = floor(p);
+    float own = v_color.r * MAX_HEIGHT;                              // the boulder's height (it may hang over the next tile)
+    // Where the picture hangs over a taller block on the next tile, that block is drawn over it (most boulders come
+    // from the static cache, under the buildings): what shows there is the block, shaded by the pass below.
+    if(texture2D(u_heights, (cell + 0.5) * u_tile).b * MAX_HEIGHT > own + 0.02) discard;
+#else
     vec2 p = (v_texCoords * u_resolution + u_campos + 4.0) / 8.0;   // this point in tiles; tile n covers n .. n + 1
     vec2 cell = floor(p);
     float own = texture2D(u_heights, (cell + 0.5) * u_tile).b * MAX_HEIGHT;   // height of the block this point is on
     if(own < 0.01) discard;                                          // bare ground: done by the ground shadow
-    // A boulder is round and smaller than its tile: only the boulder itself is shaded, not a square around it.
+    // A boulder: shaded through its own picture (PROP, above), when that runs; else only the boulder itself, round
+    // and smaller than its tile, not a square around it.
     float kind = texture2D(u_heights, (cell + 0.5) * u_tile).a;
-    if(kind > 0.40 && kind < 0.60 && length(p - (cell + 0.5)) > 0.42) discard;
+    // (alpha 129: a plain boulder, Occluders)
+    bool plainProp = kind * 255.0 > 128.5;
+    if(kind > 0.40 && kind < 0.60 && ((u_props > 0.5 && plainProp) || length(p - (cell + 0.5)) > 0.42)) discard;
     // The same for a block that is not drawn as a full square: where it leaves its tiles empty the ground shows, and
     // the ground has its shadow already.
     if(u_shaped > 0.5){
@@ -92,6 +122,7 @@ void main(){
             if(outlineAt(shape.rg, size, p - corner).g < 0.5) discard;
         }
     }
+#endif
 
     float range = (MAX_HEIGHT - own) * u_length;                     // the longest shadow that can reach up here
     vec2 light = vec2(abs(u_sun.x) < 0.0001 ? 0.0001 : u_sun.x, abs(u_sun.y) < 0.0001 ? 0.0001 : u_sun.y);
@@ -105,7 +136,7 @@ void main(){
     float shade = 0.0;
     for(int i = 0; i < MAX_TILES; i++){
         vec2 uv = (cell + 0.5) * u_tile;
-        float dark = (1.0 - texture2D(u_texture, uv).r) / 0.71;
+        float dark = (1.0 - texture2D(MASK, uv).r) / 0.71;
         if(dark > 0.05){
             // Only the part of that block that stands above this point's own block casts a shadow up here.
             // It has to be clearly taller (0.03 tiles): two readings of the same height can differ in the last digit,
@@ -148,12 +179,40 @@ void main(){
         }
         if(t > range) break;
     }
-    if(shade < 0.004) discard;
+    // Ambient occlusion between blocks: where a taller block stands right beside this one, the edge they share is
+    // darker - less of the sky reaches into the corner - the more so the taller it is, fading out a little under half
+    // a tile in ("ambient occlusion between the blocks too, for a proper sense of height"). Not from the sun: the same
+    // by day and night and whichever way the light comes, as the dark rim the ground gets round each block.
+    float occl = 0.0;
+    if(u_ao > 0.001){
+        vec2 home = floor(p);
+        for(int dy = -1; dy <= 1; dy++){
+            for(int dx = -1; dx <= 1; dx++){
+                if(dx == 0 && dy == 0) continue;
+                vec2 nb = home + vec2(float(dx), float(dy));
+                vec2 nuv = (nb + 0.5) * u_tile;
+                if((1.0 - texture2D(MASK, nuv).r) / 0.71 < 0.05) continue;
+                float taller = texture2D(u_heights, nuv).b * MAX_HEIGHT - own - 0.05;
+                if(taller <= 0.0) continue;
+                // how far this point is from that tile (0 at the shared edge or corner)
+                float d = length(p - clamp(p, nb, nb + 1.0));
+                occl = max(occl, (1.0 - smoothstep(0.0, 0.5, d)) * min(0.35 + taller * 0.45, 1.0));
+            }
+        }
+        occl *= 0.5 * u_ao;
+    }
+    if(shade < 0.004 && occl < 0.004) discard;
     // Where a lamp shines, the sun is not the only light: its shadow takes away a smaller share of the light there.
     // (A lamp behind a block does not count - its light was already cut off when u_fill was made.)
     if(u_filled > 0.5){
         vec3 lamp = texture2D(u_fill, gl_FragCoord.xy / u_screen).rgb;
         shade /= 1.0 + max(lamp.r, max(lamp.g, lamp.b)) * u_fillK;
     }
-    gl_FragColor = vec4(0.0, 0.0, 0.0, shade * u_strength);
+    // (the larger of the two, as on the ground: mshaders-shadow.frag)
+    float a = max(shade * u_strength, occl);
+#ifdef PROP
+    gl_FragColor = vec4(0.0, 0.0, 0.0, a * sprite);
+#else
+    gl_FragColor = vec4(0.0, 0.0, 0.0, a);
+#endif
 }

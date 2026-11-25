@@ -180,9 +180,11 @@ public class TestKit extends Mod{
     int many;
     float[] beamPos;
     byte[] lastFrame;
-    int flickerFrames;
+    int flickerFrames, flickerCount = 8;
     float flickerMean, flickerMax;
-    final StringBuilder flickerLumas = new StringBuilder();
+    final StringBuilder flickerLumas = new StringBuilder(), flickerSpikes = new StringBuilder();
+    final arc.struct.FloatSeq flickerLumaSeq = new arc.struct.FloatSeq();
+    final arc.struct.LongSeq flickerFrameIds = new arc.struct.LongSeq();
     float[] lampPos, unitPos, hoverPos;
     float holdTime = -1f;
     boolean holdSide;
@@ -247,6 +249,11 @@ public class TestKit extends Mod{
                 rules.fog = rules.staticFog = false;
             }
             Vars.control.playMap(map, rules);
+            // (also at the update, before the frame: the mod reads the camera at the start of the frame - Wetness - and
+            // saw the place the game had eased it to, a frame's worth of edge left dry)
+            Events.run(Trigger.update, () -> {
+                if(camSet) Core.camera.position.set(camX, camY);
+            });
             Events.run(Trigger.preDraw, () -> {
                 if(camSet) Core.camera.position.set(camX, camY);
                 if(construct && Vars.player.unit() != null && !Vars.player.unit().activelyBuilding()){
@@ -468,9 +475,25 @@ public class TestKit extends Mod{
         }
         // flicker=true: before the shot, compare 8 frames in a row. Nothing in the test scene moves except the water
         // animation, so a large change from one frame to the next is flicker.
-        if(flickerShot && elapsed >= need && flickerFrames < 8){
+        if(pendingSprites != null){
+            String names = pendingSprites;
+            pendingSprites = null;
+            spriteFb(names);
+        }
+        if(flickerShot && elapsed >= need && flickerFrames < flickerCount){
             int w = Core.graphics.getWidth(), h = Core.graphics.getHeight();
             byte[] px = ScreenUtils.getFrameBufferPixels(0, 0, w, h, true);
+            // dumpframes=N: the first N frames of the comparison saved as pictures (to look at a frame that blinks)
+            int dump = Core.settings.getInt("mshaders-test-dumpframes", 0);
+            if(flickerFrames < dump){
+                Pixmap shot = new Pixmap(w, h);
+                java.nio.ByteBuffer buf = shot.getPixels();
+                buf.clear();
+                buf.put(px);
+                buf.position(0);
+                PixmapIO.writePng(new Fi(outDir).child("frame-" + flickerFrames + ".png"), shot);
+                shot.dispose();
+            }
             if(lastFrame != null && lastFrame.length == px.length){
                 long sum = 0;
                 int big = 0;
@@ -481,19 +504,37 @@ public class TestKit extends Mod{
                 }
                 flickerMean = Math.max(flickerMean, sum / (float)(px.length / 4 * 3));
                 flickerMax = Math.max(flickerMax, big / (float)(px.length / 4));
+                // frames where many pixels jump: their number and how many
+                if(big * 1000L / (px.length / 4) >= 5) flickerSpikes.append(" #").append(flickerFrames).append(":").append(big * 1000L / (px.length / 4)).append("/1000");
             }
             {
                 // each frame's mean brightness: a whole-screen flash shows as one frame far off the others
                 long all = 0;
                 for(int i = 0; i < px.length; i += 4) all += (px[i] & 0xff) + (px[i + 1] & 0xff) + (px[i + 2] & 0xff);
-                flickerLumas.append(flickerFrames == 0 ? "" : " ").append(Strings.fixed(all / (float)(px.length / 4 * 3), 1));
+                float luma = all / (float)(px.length / 4 * 3);
+                flickerLumas.append(flickerFrames == 0 ? "" : " ").append(Strings.fixed(luma, 1));
+                flickerLumaSeq.add(luma);
+                flickerFrameIds.add(Core.graphics.getFrameId());
             }
             lastFrame = px;
             flickerFrames++;
-            if(flickerFrames < 8) return;
+            if(flickerFrames < flickerCount) return;
             line("  frame-to-frame change over 8 frames in a row: largest mean difference " + Strings.fixed(flickerMean, 3)
                 + " (of 255), largest share of pixels changing by more than 12: " + Strings.fixed(flickerMax * 100f, 2) + "%");
-            line("  mean brightness of those frames: " + flickerLumas);
+            if(flickerCount <= 16) line("  mean brightness of those frames: " + flickerLumas);
+            line("  frames with many pixels jumping:" + (flickerSpikes.length() == 0 ? " none" : flickerSpikes.toString()));
+            // One frame (or two) brighter or darker than the frames around it, then back: a blink of the whole picture
+            // or of a large part of it (falling snow changes many pixels a little, the mean hardly).
+            StringBuilder blips = new StringBuilder();
+            for(int i = 2; i < flickerLumaSeq.size - 2; i++){
+                float around = (flickerLumaSeq.get(i - 2) + flickerLumaSeq.get(i + 2)) / 2f;
+                float off = flickerLumaSeq.get(i) - around;
+                if(Math.abs(off) >= 0.3f && Math.abs(flickerLumaSeq.get(i - 2) - flickerLumaSeq.get(i + 2)) < 0.3f) blips.append(" #").append(i).append("(frame ").append(flickerFrameIds.get(i)).append("):").append(Strings.fixed(off, 2));
+            }
+            line("  frames off the brightness of the frames around them:" + (blips.length() == 0 ? " none" : blips.toString()));
+            flickerLumaSeq.clear();
+            flickerFrameIds.clear();
+            flickerSpikes.setLength(0);
             flickerLumas.setLength(0);
         }
         if(elapsed >= need){
@@ -571,6 +612,7 @@ public class TestKit extends Mod{
                 }
                 case "tick" -> Vars.state.tick = Double.parseDouble(v);
                 case "flicker" -> flickerShot = Boolean.parseBoolean(v);
+                case "flickern" -> flickerCount = Integer.parseInt(v);
                 case "dark" -> {
                     // the map rule that turns on the game's own lighting (dark maps); test profile only
                     // dark=true / false, or dark=0.95: how dark (the share of light the darkness takes away; true = 0.78)
@@ -688,6 +730,47 @@ public class TestKit extends Mod{
                 case "belt" -> placeBelt();
                 case "sortrow" -> placeSortRow();
                 case "blockrow" -> placeBlockRow(v);
+                case "dumpweather" -> {
+                    // dumpweather=NAME: every field of that weather, to the report
+                    for(mindustry.type.Weather w : Vars.content.<mindustry.type.Weather>getBy(mindustry.ctype.ContentType.weather)){
+                        if(!w.name.equals(v)) continue;
+                        StringBuilder sb = new StringBuilder("  " + v + " (" + w.getClass().getName() + "):");
+                        for(Class<?> c = w.getClass(); c != null && c != Object.class; c = c.getSuperclass()){
+                            for(java.lang.reflect.Field f : c.getDeclaredFields()){
+                                if(java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                                try{
+                                    f.setAccessible(true);
+                                    Object val = f.get(w);
+                                    if(val instanceof Number || val instanceof Boolean || val instanceof String || val instanceof Color) sb.append(' ').append(f.getName()).append('=').append(val);
+                                }catch(Throwable ignored){}
+                            }
+                        }
+                        line(sb.toString());
+                        line("  minScale " + Vars.renderer.minScale() + ", maxScale " + Vars.renderer.maxScale() + ", scale now " + Vars.renderer.getDisplayScale() + ", camera " + Core.camera.width + "x" + Core.camera.height);
+                    }
+                }
+                case "put" -> {
+                    // put=name@dx@dy[@rotation]: one block (or boulder) that many tiles from where blockrow starts (row 9 above the test buildings)
+                    String[] a = v.split("@");
+                    var block = Vars.content.block(a[0]);
+                    var t = block == null ? null : Vars.world.tile(baseX + Integer.parseInt(a[1]), baseY + 9 + Integer.parseInt(a[2]));
+                    if(t != null){
+                        t.setBlock(block, Vars.player.team(), a.length > 3 ? Integer.parseInt(a[3]) : 0);
+                        line("  put " + a[0] + " at " + t.x + "," + t.y);
+                    }else line("  could not put " + v);
+                }
+                case "fillbelt" -> {
+                    // fillbelt=ITEM: every conveyor gets a load of that item (put a wall at the end and they clog)
+                    var item = Vars.content.item(v);
+                    int n = 0;
+                    if(item != null) for(var bd : Vars.state.teams.get(Vars.player.team()).buildings){
+                        if(bd instanceof mindustry.world.blocks.distribution.Conveyor.ConveyorBuild cb){
+                            for(int q = 0; q < 4; q++) if(cb.acceptStack(item, 1, null) > 0) cb.handleStack(item, 1, null);
+                            n++;
+                        }
+                    }
+                    line("  filled " + n + " conveyor(s) with " + v);
+                }
                 case "drill" -> placeDrill();
                 case "peekdrill" -> {
                     // peekdrill=true (after drill=true): three ores under the drill and none on one tile, and the cursor on it
@@ -722,6 +805,7 @@ public class TestKit extends Mod{
                 case "cam" -> {
                     camX = (baseX + Float.parseFloat(v.split(":")[0]) + 0.5f) * Vars.tilesize;
                     camY = (baseY + Float.parseFloat(v.split(":")[1]) + 0.5f) * Vars.tilesize;
+                    camSet = true;
                 }
                 case "field" -> placeField();
                 case "fieldof" -> placeFieldOf(v);
@@ -1168,6 +1252,21 @@ public class TestKit extends Mod{
                 case "pin" -> pinAt = new float[]{(baseX + Float.parseFloat(v.split(":")[0]) + 0.5f) * Vars.tilesize, (baseY + Float.parseFloat(v.split(":")[1]) + 0.5f) * Vars.tilesize};
                 case "sprites" -> dumpSprites(v);
                 case "spritefiles" -> spriteFiles();
+                case "spritefb" -> pendingSprites = v;
+                case "mem" -> {
+                    // mem=true: memory in use now, after a collection (Java heap, and native memory the engine counts)
+                    System.gc();
+                    var rt = Runtime.getRuntime();
+                    String ws = "?";
+                    try{
+                        var pr = new ProcessBuilder("powershell", "-NoProfile", "-Command", "(Get-Process -Id " + ProcessHandle.current().pid() + ").WorkingSet64; (Get-Process -Id " + ProcessHandle.current().pid() + ").PrivateMemorySize64").redirectErrorStream(true).start();
+                        String[] out = new String(pr.getInputStream().readAllBytes()).trim().split("[\\r\\n ]+");
+                        ws = Long.parseLong(out[0]) / 1048576 + " MB working set, " + Long.parseLong(out[1]) / 1048576 + " MB private";
+                    }catch(Throwable t){
+                        ws = t.toString();
+                    }
+                    line("  memory: java heap " + (rt.totalMemory() - rt.freeMemory()) / 1048576 + " MB; process " + ws);
+                }
                 case "turretlist" -> listTurrets();
                 case "weaponlist" -> listWeapons();
                 case "unitcolors" -> unitColors();
@@ -2230,6 +2329,39 @@ public class TestKit extends Mod{
      * <out>/sprites/blocks and <out>/sprites/units - to count the colours the game paints with (run it without the
      * shader mod, which replaces sprites). Left out: copies and masks (icons, outlines, team pieces, heat and glow).
      */
+    String pendingSprites;
+
+    /** spritefb=NAME+NAME..: each sprite drawn alone into a picture of its own size and saved (sprites/NAME.png), as the game has it. */
+    void spriteFb(String names){
+        for(String name : names.split("[+]")){
+            var region = Core.atlas.find(name);
+            if(!region.found()){
+                line("  sprite " + name + ": not in atlas");
+                continue;
+            }
+            int w = region.width, h = region.height;
+            var fb = new arc.graphics.gl.FrameBuffer(w, h);
+            var before = new arc.math.Mat(Draw.proj());
+            Draw.flush();
+            fb.begin(Color.clear);
+            Draw.proj(new arc.math.Mat().setOrtho(0f, 0f, w, h));
+            Draw.blend(Blending.disabled);
+            Draw.color();
+            Draw.rect(region, w / 2f, h / 2f, w, h);
+            Draw.flush();
+            byte[] px = ScreenUtils.getFrameBufferPixels(0, 0, w, h, true);
+            fb.end();
+            Draw.blend();
+            Draw.proj(before);
+            fb.dispose();
+            Pixmap pm = new Pixmap(w, h);
+            Buffers.copy(px, 0, pm.pixels, px.length);
+            PixmapIO.writePng(new Fi(outDir).child("sprites").child(name + ".png"), pm);
+            pm.dispose();
+            line("  sprite " + name + " " + w + "x" + h);
+        }
+    }
+
     void spriteFiles(){
         String[] skip = {"-heat", "-glow", "-light", "-shadow", "-full", "-ui", "-icon", "-preview", "-outline", "-liquid", "-blur", "-invert"};
         Seq<String> blocks = new Seq<>(), units = new Seq<>();

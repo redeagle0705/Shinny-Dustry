@@ -80,7 +80,9 @@ import mindustry.world.draw.*;
  * turret of that size - and <name> for the head; for a conveyor
  * <name>-<shape 0..6>-<frame 0..3>, or <name>-<shape> for a picture that serves all four frames. A frame without a
  * picture of its own uses the nearest frame of that shape that has one, so the shading does not blink while the belt runs.
- * A door also has <name>-open, used while it stands open; a thruster <name>-top, which turns with it; and a block the
+ * A door also has <name>-open, used while it stands open; a thruster <name>-top, which turns with it; a unit factory
+ * or reconstructor its frame (<name>-top, or factory-top-<size> shared by every factory of that size) and arrows
+ * (factory-out-<size>, factory-in-<size>, unless the block has its own); and a block the
  * game draws as one of several sprites (the scrap walls) has one picture per sprite: <name>1, <name>2, ... - the game
  * picks one by where the building stands, and so is the map picked.
  * Where a sprite has both kinds of map, the setting "prefer height maps" picks.
@@ -465,6 +467,14 @@ public class Surfaces{
         if(block instanceof Door || block instanceof AutoDoor) return new String[]{block.name, block.name + "-open"};
         // the top of a thruster is a sprite of its own, turned with the building (Thruster.topRegion)
         if(block instanceof Thruster) return new String[]{block.name, block.name + "-top"};
+        // a unit factory or reconstructor: its floor, and the frame drawn over the unit being made (UnitFactory.topRegion,
+        // Reconstructor.topRegion) - two pictures, "<name>" and "<name>-top"
+        if(block instanceof mindustry.world.blocks.units.UnitFactory || block instanceof mindustry.world.blocks.units.Reconstructor){
+            // as PayloadBlock.load() finds them: a picture of the block's own if there is one, else the one every factory
+            // of that size shares ("factory-top-3", ...); the arrows are turned with the building
+            boolean in = block instanceof mindustry.world.blocks.units.Reconstructor;
+            return new String[]{block.name, shared(block, "-out", "factory-out-"), in ? shared(block, "-in", "factory-in-") : null, shared(block, "-top", "factory-top-")};
+        }
         // a building drawn as one of several sprites, picked by where it stands (Block.variants: the scrap walls):
         // "<name>1", "<name>2", ... as Block.load() names them - there is no sprite with the block's own name
         if(block.variants > 0 && block.hasBuilding()){
@@ -475,6 +485,10 @@ public class Surfaces{
         return new String[]{block.name};
     }
 
+    /** The name of a sprite of that block: "<block><suffix>" if the game has one, else the one shared by blocks of its size. */
+    private static String shared(Block block, String suffix, String common){
+        return Core.atlas.has(block.name + suffix) ? block.name + suffix : common + block.size;
+    }
     /** Adds the names of the sprites of those parts (and of the parts within them) and notes the place of each in partSlots. */
     private static void partNames(Seq<DrawPart> parts, Seq<String> names){
         for(DrawPart drawn : parts){
@@ -613,6 +627,8 @@ public class Surfaces{
         found[byNormal] = found[byHeight] = 0;
         glossMaps = byColour = 0;
         mapsOff = Core.settings.getBool(ShaderMod.devGlossTable, false);
+        // the mod's own pictures left out (ArtSwitch): no normal maps either - they are drawn for those sprites
+        if(!ArtSwitch.on) return;
         GlossColors.load();
         Seq<Block> owners = new Seq<>();
         IntSeq kinds = new IntSeq(), slots = new IntSeq(), which = new IntSeq();
@@ -636,6 +652,8 @@ public class Surfaces{
             String[] names = sprites(block);
             for(int kind = 0; kind < 2; kind++){
                 for(int slot = 0; slot < names.length; slot++){
+                    // (an empty slot: a layer that block does not have - a unit factory has no input arrow)
+                    if(names[slot] == null) continue;
                     Fi file = find(kind, names[slot]);
                     // a conveyor picture without a frame number serves every frame of its shape
                     if(file == null && block instanceof Conveyor) file = find(kind, block.name + "-" + slot / beltFrames);
@@ -991,6 +1009,18 @@ public class Surfaces{
         if(slot >= of[byNormal].length) slot = base;
         // the base: turned with the building only for blocks whose sprite the game turns
         layer(pick(of, slot), build.x, build.y, false, false, block.rotate && block.rotateDraw ? build.rotdeg() : 0f);
+        // the frame of a unit factory or reconstructor, over its floor (and over the unit being made, which the game
+        // draws between the two), not turned
+        if(block instanceof mindustry.world.blocks.units.UnitFactory || block instanceof mindustry.world.blocks.units.Reconstructor){
+            // UnitFactory/Reconstructor.draw(): the floor, the arrows turned with the building, (the unit being made,)
+            // the frame on top
+            if(of[byNormal].length > 3){
+                layer(pick(of, 1), build.x, build.y, false, false, build.rotdeg());
+                layer(pick(of, 2), build.x, build.y, false, false, build.rotdeg());
+                layer(pick(of, 3), build.x, build.y, false, false, 0f);
+            }
+            return true;
+        }
         if(build instanceof Drill.DrillBuild drill){
             // Drill.DrillBuild.draw(): the rotator spins by timeDrilled * rotateSpeed, the top sits still
             layer(pick(of, rotator), build.x, build.y, false, false, drill.timeDrilled * ((Drill)block).rotateSpeed);

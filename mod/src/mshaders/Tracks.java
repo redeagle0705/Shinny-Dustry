@@ -26,7 +26,8 @@ public class Tracks{
     private static float lastFade, fadeTime;
     private static Texture map;
     private static final Mat proj = new Mat(), before = new Mat();
-    private static final int perTile = 4;
+    // (two pixels a tile: four made a picture of up to 4096 x 4096, 64 MB, twice over, on every map)
+    private static final int perTile = 2;
 
     public static void init(){
         try{
@@ -47,12 +48,16 @@ public class Tracks{
             last.clear();
             stamps.clear();
             fadeTime = 0f;
-            if(a != null){
-                a.dispose();
-                b.dispose();
-                a = b = null;
-            }
+            free();
         });
+    }
+
+    private static void free(){
+        if(a != null){
+            a.dispose();
+            b.dispose();
+            a = b = null;
+        }
     }
 
     static boolean on(){
@@ -111,9 +116,12 @@ public class Tracks{
         map = null;
         if(!on() || fade == null || !Vars.state.isGame()){
             stamps.clear();
+            free();
             return;
         }
-        int w = Math.min(Vars.world.width() * perTile, 4096), h = Math.min(Vars.world.height() * perTile, 4096);
+        // nothing made until there is something to keep (no units in water / on soft ground, no picture at all)
+        if(a == null && stamps.isEmpty()) return;
+        int w = Math.min(Vars.world.width() * perTile, 2048), h = Math.min(Vars.world.height() * perTile, 2048);
         boolean fresh = false;
         if(a == null){
             a = new FrameBuffer(w, h);

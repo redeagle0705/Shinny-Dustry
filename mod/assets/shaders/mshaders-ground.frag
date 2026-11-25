@@ -37,8 +37,11 @@ uniform float u_px;          // world units per screen pixel (large when zoomed 
 uniform float u_relief;      // strength of the relief shading, 0 = off, 1 = default
 uniform vec2 u_sunDir;       // direction towards the sun on the ground, length 1
 uniform float u_rain;        // how much rain there is, 0 = none (Skies.java)
+uniform float u_pool;        // how much water stands in the puddles (Skies.puddles): they fill while it rains and stay a while after
 uniform float u_snow;        // how much snow lies on the ground, 0 = none
+uniform float u_spore;       // how many spores of a spore storm have settled on the ground (Skies.spores), 0 = none
 uniform vec2 u_sand;         // x: how much sand has drifted onto the ground, y: how hard the sandstorm blows now
+uniform float u_sandPile;    // how much sand piles up against the blocks, 0 .. 2 (setting; 1 = as made)
 uniform vec2 u_wind;         // where the sandstorm blows towards, length 1
 uniform sampler2D u_tracks;  // tracks of ground units (Tracks.java): red = how deep
 uniform float u_hasTracks;   // 0 = none; otherwise how strongly they show
@@ -47,6 +50,9 @@ uniform float u_hasMelt;     // 0 = no such picture
 uniform vec4 u_warm[16];     // hot buildings that have melted their snow: x, y, reach, how far melted (SnowCover.java); reach 0 = not in use
 uniform sampler2D u_solid;   // one texel per tile, linear filtered: red = a solid block stands there (Occluders.java)
 uniform float u_hasSolid;    // 0 = no such picture
+uniform sampler2D u_pileField; // the shape of the sand piles over the view, worked out once a frame (Skies.makeField)
+uniform float u_hasField;    // 0 = not made: worked out here, per pixel
+uniform vec4 u_fieldRect;    // the world rectangle it covers: x, y, width, height
 
 varying vec2 v_texCoords;
 
@@ -78,9 +84,10 @@ float puddleGround(float k){
 // last step of the frame it lay over everything): wet darkening; puddles in the hollows, thinning out towards ground
 // that takes none (water, snow, hot rock); rings where drops fall in them.
 vec3 rainOn(vec3 color, vec2 world, float kind){
-    float r = u_rain;
+    float r = u_rain, p = u_pool;
     float g = dot(color, vec3(0.299, 0.587, 0.114));
-    color = mix(color, mix(vec3(g), color, 1.12) * 0.86, r);
+    // (wet while it rains, and still damp while puddles stand)
+    color = mix(color, mix(vec3(g), color, 1.12) * 0.86, max(r, p * 0.7));
     if(kind > 2.5 && kind < 3.5) return color;   // snow: only wet
     vec2 t = (world + 4.0) / 8.0 - 0.5, base = floor(t), f = fract(t);
     float a = puddleGround(kindAt(base * 8.0)), b = puddleGround(kindAt((base + vec2(1.0, 0.0)) * 8.0)),
@@ -89,7 +96,9 @@ vec3 rainOn(vec3 color, vec2 world, float kind){
     float room = mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
     if(room <= 0.01) return color;
     float n = noise(world / 1100.0) * 0.55 + noise(world / 420.0 + 0.37) * 0.3 + noise(world / 170.0 + 0.71) * 0.15;
-    float puddle = smoothstep(0.56 - 0.06 * r + (1.0 - room) * 0.3, 0.63 - 0.06 * r + (1.0 - room) * 0.3, n) * r;
+    // The puddles follow how much water stands (p), not the rain of this moment: they spread the longer it rains, and
+    // stay when it stops, shrinking as they dry. (They were as large as the rain was hard, and gone when it stopped.)
+    float puddle = smoothstep(0.60 - 0.08 * p + (1.0 - room) * 0.3, 0.67 - 0.08 * p + (1.0 - room) * 0.3, n) * min(p * 1.6, 1.0);
     // Drops on the ground between the puddles: a small dark wet spot that comes and soaks away, a new place each time.
     // (With rings only in the puddles, which lie still, the rain seemed to fall always in the same places.)
     {
@@ -103,7 +112,21 @@ vec3 rainOn(vec3 color, vec2 world, float kind){
     }
     if(puddle <= 0.001) return color;
     vec3 sky = vec3(0.55, 0.62, 0.72);
-    color = mix(color, color * 0.5 + sky * 0.2 * clamp(g * 2.2, 0.0, 1.0), puddle * 0.7);
+    color = mix(color, color * 0.5 + sky * 0.2 * clamp(g * 2.2, 0.0, 1.0), puddle * (0.5 + 0.3 * p));
+    // The deeper the water stands, the clearer it mirrors: a streak of sky that slides over it as the camera moves (it
+    // is tied to the ground only in part, as a reflection is), with the sun in it.
+    {
+        vec2 eye = u_campos + u_resolution * 0.5;
+        // (broad and soft, a little wavy where the water ripples: a sharp, evenly spaced line read as stripes of light
+        // laid over the grass, not as sky in water)
+        float along = (dot(world - eye * 0.35, u_sunDir) + (noise(world / 90.0) - 0.5) * 18.0) / 70.0;
+        float wave = 0.5 + 0.5 * sin(along * 6.2832);
+        vec3 skyLight = vec3(0.62, 0.70, 0.82) * (0.75 + 0.35 * wave);
+        // what the water shows is the sky, more of it the deeper it is; the ground under it shows less
+        color = mix(color, skyLight, (0.10 + 0.30 * pow(wave, 3.0)) * puddle * p);
+        // the sun, a soft glow in the middle of the band
+        color += vec3(1.0, 0.96, 0.88) * pow(wave, 12.0) * 0.12 * puddle * p;
+    }
     float rim = smoothstep(0.0, 0.25, puddle) * (1.0 - smoothstep(0.25, 0.7, puddle));
     color += vec3(0.8, 0.85, 0.9) * rim * 0.05;
     // rings where drops fall: one now and then in each cell of 9 world units
@@ -124,7 +147,8 @@ vec3 rainOn(vec3 color, vec2 world, float kind){
             ring += exp(-x * x) * (1.0 - phase) * step(hash1(cc + drop * 0.61 + 5.7), 0.35 + 0.4 * r);
         }
     }
-    color += vec3(0.75, 0.82, 0.9) * min(ring, 1.0) * 0.22 * puddle;
+    // (rings only while it rains)
+    color += vec3(0.75, 0.82, 0.9) * min(ring, 1.0) * 0.22 * puddle * min(r * 3.0, 1.0);
     return color;
 }
 
@@ -202,6 +226,29 @@ vec3 snowOn(vec3 color, vec2 world, float kind, vec2 eye, float fine){
     return color;
 }
 
+// Spores settled by a spore storm: not a dusting as snow, but clumps, as moss grows - violet, darker in the middle of a
+// clump, with a speck here and there; more and larger clumps the more have settled. Where snow could lie (roomFor).
+vec3 sporesOn(vec3 color, vec2 world){
+    float room = roomFor(world, true);
+    if(room <= 0.01) return color;
+    // burnt off around hot buildings and where beams have swept, as the snow melts there (the smoke rises from
+    // SnowCover; at first heat did nothing to them: "the meltdown and the heat of turrets don't seem to touch them")
+    room *= 1.0 - thawAt(world);
+    if(room <= 0.01) return color;
+    // (in large clumps: at first they came in small spots all over - "they should gather in bigger clumps")
+    float n = noise(world / 160.0) * 0.65 + noise(world / 48.0 + 0.53) * 0.35;
+    // (at most about a third of the ground: clumps, not a carpet - at first it all but covered the grass)
+    float th = 0.92 - u_spore * 0.38 + (1.0 - room) * 0.5;
+    float clump = smoothstep(th - 0.05, th + 0.08, n);
+    float lum = dot(color, vec3(0.299, 0.587, 0.114));
+    vec3 moss = mix(vec3(0.30, 0.20, 0.45), vec3(0.55, 0.42, 0.78), smoothstep(th, th + 0.25, n)) * (0.75 + 0.5 * lum);
+    color = mix(color, moss, clump * 0.72);
+    // specks: single spores lying apart from the clumps
+    vec2 cell = floor(world / 2.0);
+    float h = hash1(cell + 47.0);
+    if(h < u_spore * 0.06 * room) color = mix(color, vec3(0.62, 0.48, 0.88), 0.55 * (1.0 - smoothstep(0.25, 0.5, length(world / 2.0 - cell - 0.5))));
+    return color;
+}
 // Sandstorm: sand drifts piled up along the wind on the ground (they build up during the storm and are blown away
 // slowly after), fast pale streaks of blowing sand running downwind with their shade under them, and dusty light.
 vec3 sandOn(vec3 color, vec2 world, float kind, float fine){
@@ -223,7 +270,13 @@ vec3 sandOn(vec3 color, vec2 world, float kind, float fine){
             // Sand piles up against the blocks on the side the wind comes from: look downwind for a block - the nearer,
             // the deeper the sand - and a little to each side, so it wraps round the corners and tails off there.
             float pile = 0.0;
-            if(u_hasSolid > 0.5){
+            if(u_hasSolid > 0.5 && u_hasField > 0.5){
+                // the shape, worked out over the view once this frame (Skies.makeField: the same as below)
+                pile = texture2D(u_pileField, (world - u_fieldRect.xy) / u_fieldRect.zw).r * u_sandPile;
+                float streaks = noise(vec2(along / 70.0 - t * 0.25 * b, across / 6.0));
+                pile = smoothstep(0.30, 0.48, pile * (0.85 + 0.3 * noise(world / 30.0)) + (streaks - 0.5) * 0.2 * (0.5 + b)) * room;
+                pile *= smoothstep(0.0, 0.35, c);
+            }else if(u_hasSolid > 0.5){
                 // The shape (the maker's drawing, wind blowing down: an upside-down U round each block): a bank on the
                 // face the wind blows onto, and from its corners two tails that run down both sides with the wind and
                 // on past the block - none in the sheltered strip right behind it.
@@ -253,7 +306,7 @@ vec3 sandOn(vec3 color, vec2 world, float kind, float fine){
                     float a = 3.0 + float(k) * 7.0;
                     lee = max(lee, texture2D(u_solid, (world - w * a + 4.0) / (8.0 * u_tiles)).r);
                 }
-                pile = max(cap, min(tails * 1.3, 1.0) * (1.0 - lee));
+                pile = max(cap, min(tails * 1.3, 1.0) * (1.0 - lee)) * u_sandPile;
                 // its edge broken up by the noise, and streaked along the wind where the sand runs round the block
                 float streaks = noise(vec2(along / 70.0 - t * 0.25 * b, across / 6.0));
                 pile = smoothstep(0.30, 0.48, pile * (0.85 + 0.3 * noise(world / 30.0)) + (streaks - 0.5) * 0.2 * (0.5 + b)) * room;
@@ -508,8 +561,9 @@ void main(){
         vec3 bare = color;
         if(u_sand.x > 0.001 || u_sand.y > 0.001) color = sandOn(color, world, kind, fine);
         if(u_snow > 0.001) color = snowOn(color, world, kind, eye, fine);
+        if(u_spore > 0.001) color = sporesOn(color, world);
         if(ore > 0.0) color = mix(color, bare, ore * 0.75);
-        if(u_rain > 0.001) color = rainOn(color, world, kind);
+        if(u_rain > 0.001 || u_pool > 0.001) color = rainOn(color, world, kind);
         // tracks pressed into soft ground (sand, snow, and what the weather lays down): a darker groove, cooler in snow
         float tr = tracksAt(world);
         if(tr > 0.003){
