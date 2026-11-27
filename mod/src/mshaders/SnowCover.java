@@ -148,7 +148,7 @@ public class SnowCover{
      */
     static void dull(Occluders occ){
         dulling.clear();
-        if(sporeAmount > 0.01f && Vars.state.isGame()){
+        if(sporeAmount > 0.01f && ShaderMod.inWorld()){
             for(int i = 0; i < builds.size; i++){
                 Building b = builds.get(i);
                 if(!b.isValid() || b instanceof mindustry.world.blocks.ConstructBlock.ConstructBuild) continue;
@@ -178,7 +178,7 @@ public class SnowCover{
 
     private static void updateMelt(){
         meltMap = null;
-        if((amount <= 0.01f && sporeAmount <= 0.01f) || fade == null || !Vars.state.isGame()){
+        if((amount <= 0.01f && sporeAmount <= 0.01f) || fade == null || !ShaderMod.inWorld()){
             stamps.clear();
             // (no snow: the picture is let go - kept, it held memory on every map without snow)
             if(meltA != null){
@@ -279,6 +279,7 @@ public class SnowCover{
                 "uniform vec2 u_sun, u_rimSun;\n" +
                 "uniform float u_part, u_partA, u_partBurn;\n" +
                 "uniform vec2 u_pivot, u_rot, u_seed;\n" +
+                headMaskGlsl +
                 // patches, first on what is drawn lighter; a = how much snow there is on this building
                 "float coverAt(vec2 w, float lum, float th){\n" +
                 "    float n = noise(w / 5.0) * 0.6 + noise(w / 1.7) * 0.4;\n" +
@@ -293,6 +294,7 @@ public class SnowCover{
                 // (u_part: a turret's moving parts, drawn by the game's own part drawing, which sets its own colours: how
                 // much lies there comes in u_partA, their own alpha still counting - a heat glow drawn see-through)
                 "    vec2 world = u_campos + gl_FragCoord.xy / u_screen * u_size;\n" +
+                "    if(underHead(world)) discard;\n" +
                 // (read in the turret's own frame, which turns with it - one frame for the head and all its parts: read
                 // off each picture, every plate had patches of its own, cut off where it ended - "the snow looks cut")
                 "    if(v_color.g < 0.5 || u_part > 0.5){ vec2 r = world - u_pivot; world = vec2(r.x * u_rot.x + r.y * u_rot.y, -r.x * u_rot.y + r.y * u_rot.x) + u_seed; }\n" +
@@ -331,16 +333,20 @@ public class SnowCover{
                 // more on the side away from the sun. (The outline counts as well as the end of the sprite: around a
                 // square block the picture's neighbours on the atlas need not be clear.)
                 "    vec2 tx = 1.0 / u_texSize;\n" +
-                "    float rim = 0.0, rimSun = 0.0;\n" +
+                "    float rim = 0.0, rimSun = 0.0, hits = 0.0;\n" +
                 // (the game's outline is 404049, lum 0.25: a cut at 0.2 missed it, and the outlines stayed snowed on)
                 // (by its colour, not by darkness alone: dark panels on a sprite are not outline)
-                "    if(outl(c.rgb) > 0.5){ rim = 1.0; }\n" +
+                // (blue 0.7: an item lying on a belt - no outline of the game's there: dark coal passed for outline, and only a
+                // C of snow round its edge was left - "put one coal on a conveyor while it snows")
+                "    float isItem = v_color.b > 0.65 && v_color.b < 0.75 ? 1.0 : 0.0;\n" +
+                "    if(isItem < 0.5 && outl(c.rgb) > 0.5){ rim = 1.0; }\n" +
                 "    else for(int k = 0; k < 8; k++){\n" +
                 "        float ang = float(k) * 0.7854;\n" +
                 "        vec2 d = vec2(cos(ang), sin(ang));\n" +
                 "        for(int s = 1; s <= 3; s++){\n" +
                 "            vec4 n2 = texture2D(u_texture, v_texCoords + d * tx * float(s) * 1.4);\n" +
-                "            if(n2.a < 0.5 || outl(n2.rgb) > 0.5){\n" +
+                "            if(n2.a < 0.5 || (isItem < 0.5 && outl(n2.rgb) > 0.5)){\n" +
+                "                hits += 1.0;\n" +
                 "                float w = 1.0 - (float(s) - 1.0) / 3.0;\n" +
                 // (the side read in the picture's frame: only for a picture drawn unturned - blue 1)
                 "                if(w > rim){ rim = w; rimSun = dot(d, vec2(u_rimSun.x, -u_rimSun.y)) * step(0.8, v_color.b); }\n" +
@@ -348,12 +354,16 @@ public class SnowCover{
                 "            }\n" +
                 "        }\n" +
                 "    }\n" +
+                // (something thin - a conveyor's rail, a few pixels across - is edge on every side: all of it was shaded,
+                // and the straight belts' rails looked bare grey beside the white bends. Where most ways out end close
+                // by, little shading.)
+                "    rim *= mix(1.0, 0.2, smoothstep(3.5, 6.0, hits));\n" +
                 "    snow *= 1.0 - rim * (0.22 + 0.22 * max(-rimSun, 0.0)) + rim * 0.05 * max(rimSun, 0.0);\n" +
                 "    snow = mix(snow, snow * vec3(0.82, 0.88, 1.0), rim * 0.5);\n" +
                 "    float body = cover * mix(0.78, 0.95, clamp(a - 0.5, 0.0, 1.0));\n" +
                 // (the dark outline itself stays bare: snow lay on a turret's moving parts' outlines too, a white ring
                 // round each - the outline is the edge's shadow)
-                "    body *= 1.0 - 0.95 * outl(c.rgb);\n" +
+                "    body *= 1.0 - 0.95 * outl(c.rgb) * (1.0 - isItem);\n" +
                 "    float sh = shade * 0.32 * (1.0 - cover);\n" +
                 "    float alpha = body + (1.0 - body) * sh;\n" +
                 "    vec3 col = (snow * body + vec3(0.10, 0.13, 0.20) * (1.0 - body) * sh) / max(alpha, 0.001);\n" +
@@ -385,12 +395,14 @@ public class SnowCover{
                 "uniform float u_time;\n" +
                 "uniform float u_part, u_partA, u_partBurn;\n" +
                 "uniform vec2 u_pivot, u_rot, u_seed;\n" +
+                headMaskGlsl +
                 "void main(){\n" +
                 "    vec4 c = texture2D(u_texture, v_texCoords);\n" +
                 "    if(c.a < 0.5) discard;\n" +
                 // (u_part: a turret's moving parts, drawn by the game's own part drawing, which sets its own colours: how
                 // much lies there comes in u_partA, their own alpha still counting - a heat glow drawn see-through)
                 "    vec2 world = u_campos + gl_FragCoord.xy / u_screen * u_size;\n" +
+                "    if(underHead(world)) discard;\n" +
                 // (blue 0: a unit, one picture, read off the picture itself - a frame of its own each would cost a flush)
                 "    if(v_color.b < 0.2 && u_part < 0.5) world = v_texCoords * u_texSize / 4.0;\n" +
                 // (a conveyor's bend: blue 0.3 its pale rails only, blue 0.5 its dark belt only)
@@ -464,18 +476,20 @@ public class SnowCover{
         float falling = Math.min(Skies.snowing * Skies.snowK(), 1f);
         if(falling > 0.05f) deep = Math.min(deep + dt * falling / (60f * 180f), Math.min(falling * 1.2f, 1f));
         else deep = Math.max(deep - dt / (60f * 70f), 0f);
+        // (the scene behind the menu on a snowy map: buried a good way, as after a long fall - its time stands still)
+        if(MenuWorld.snowLying() > 0f) deep = Math.max(deep, 0.6f);
         int forcedDeep = Core.settings.getInt("mshaders-test-snowdeep", -1);
         if(forcedDeep >= 0) deep = forcedDeep / 100f;
-        if(!Vars.state.isGame()) deep = 0f;
+        if(!ShaderMod.inWorld()) deep = 0f;
         // (the "spores settle" setting: 0 .. 200 % of it, on the blocks and the units as on the ground)
         sporeAmount = Math.min(Math.min(Skies.spores * Skies.sporeK() * 1.6f, 1f) * 0.45f * Skies.sporePile(), 0.9f);
         // the spores on units go on gathering and falling off before anything else (they stay a while after the storm)
-        if(!Vars.state.isMenu() && sporeShader != null && (sporeAmount > 0.01f || unitSpores.size > 0)) unitSpores(dt);
+        if(!!ShaderMod.inWorld() && sporeShader != null && (sporeAmount > 0.01f || unitSpores.size > 0)) unitSpores(dt);
         else if(unitSpores.size > 0){
             unitSpores.clear();
             unitBurn.clear();
         }
-        if((amount <= 0.01f && sporeAmount <= 0.01f) || Vars.state.isMenu()){
+        if((amount <= 0.01f && sporeAmount <= 0.01f) || !ShaderMod.inWorld()){
             melt.clear();
             ground.clear();
             burning.clear();
@@ -503,10 +517,10 @@ public class SnowCover{
         for(int i = 0; i < builds.size; i++){
             Building b = builds.get(i);
             if(!b.isValid()) continue;
-            float own = Math.max(HitHeat.heatAt(b.pos()), HeatHaze.canBeHot(b.block) ? HeatHaze.heatOf(b) : 0f);
+            float own = ownHeat(b);
             if(own > 0.05f){
                 selfHot.add(b.pos());
-                sources.add(b.x, b.y, b.block.size * Vars.tilesize * 0.5f + 14f + b.block.size * 4f, own);
+                sources.add(b.x, b.y, warmReach(b), own);
             }else{
                 selfHot.remove(b.pos());
             }
@@ -515,7 +529,7 @@ public class SnowCover{
         for(int i = 0; i < builds.size; i++){
             Building b = builds.get(i);
             if(!b.isValid()) continue;
-            float own = Math.max(HitHeat.heatAt(b.pos()), HeatHaze.canBeHot(b.block) ? HeatHaze.heatOf(b) : 0f);
+            float own = ownHeat(b);
             int key = b.pos();
             // the warmth of hot buildings nearby reaches it too, as it reaches the ground (the maker: "when a building
             // gives off heat, the other buildings seem not to be touched at all")
@@ -526,6 +540,8 @@ public class SnowCover{
                 float d = Mathf.dst(b.x, b.y, v[o], v[o + 1]) / (v[o + 2] + b.block.size * Vars.tilesize * 0.5f);
                 near = Math.max(near, v[o + 3] * (1f - Interp.smooth.apply(Mathf.clamp((d - 0.4f) / 0.6f))));
             }
+            // (armour keeps the warmth of the neighbours out, as it keeps its own heat in)
+            if(insulated(b.block)) near = 0f;
             float warm = Math.max(own, near * 0.8f);
             float m = melt.get(key, 0f);
             // spores burning: while the heat is eating them (red, then smoke - "like catching fire, then smoke, gone");
@@ -568,7 +584,7 @@ public class SnowCover{
             spot[0] = b.x;
             spot[1] = b.y;
             // (a hot block thaws a ring around itself, larger the larger it is)
-            spot[2] = b.block.size * Vars.tilesize * 0.5f + 14f + b.block.size * 4f;
+            spot[2] = warmReach(b);
             spot[3] = Math.max(spot[3], m);
         }
         for(var it = spots.iterator(); it.hasNext();){
@@ -584,7 +600,7 @@ public class SnowCover{
         for(int i = 0; i < builds.size; i++){
             Building b = builds.get(i);
             if(!b.isValid()) continue;
-            float g = groundThaw(b);
+            float g = insulated(b.block) ? 0f : groundThaw(b);
             if(g > 0.01f) ground.put(b.pos(), g);
         }
         warmCount = 0;
@@ -620,6 +636,95 @@ public class SnowCover{
         headPass = false;
     };
 
+    /**
+     * Masks what is drawn next by a turret's head (on): nothing where the head is - for the parts the game draws under
+     * the head (Duo's barrels), drawn here over everything (Draw.z is passed over in a Draw.draw runnable; drawn in a
+     * pass of their own under the heads, the shading of the normal maps, drawn after, hid them). The shader works out
+     * where on the head's picture a point is from the turret's frame (u_pivot, u_rot: turnFrame or set here).
+     */
+    static void headMask(arc.graphics.gl.Shader s, Building b, boolean on){
+        Draw.flush();
+        s.bind();
+        if(!on || !(b instanceof Turret.TurretBuild t) || !(b.block instanceof Turret turret) || turret.region == null || !turret.region.found()){
+            s.setUniformf("u_headMask", 0f);
+            return;
+        }
+        TextureRegion r = turret.region;
+        float rot = t.drawrot();
+        s.setUniformf("u_headMask", 1f);
+        s.setUniformf("u_pivot", b.x + t.recoilOffset.x, b.y + t.recoilOffset.y);
+        s.setUniformf("u_rot", Mathf.cosDeg(rot), Mathf.sinDeg(rot));
+        s.setUniformf("u_headUV", r.u, r.v, r.u2, r.v2);
+        s.setUniformf("u_headSize", r.width * Draw.scl * Draw.xscl, r.height * Draw.scl * Draw.yscl);
+        s.setUniformf("u_campos", Core.camera.position.x - Core.camera.width / 2f, Core.camera.position.y - Core.camera.height / 2f);
+        s.setUniformf("u_size", Core.camera.width, Core.camera.height);
+        s.setUniformf("u_screen", viewW(), viewH());
+    }
+
+    /**
+     * A drill in its pieces, as the game draws it (Drill.DrillBuild.draw: the frame, the rotator turned by how long it
+     * has drilled, the cap). Drawn as its icon, the cover lay still while the rotator span under it ("when it snows -
+     * the drills turning, I hadn't thought of that"). A turning rotator throws its snow off: none on it, and none on the
+     * frame where the rotator covers it (masked as the parts under a turret's head are). One standing still keeps its
+     * snow, turned as it stopped. False for anything else.
+     */
+    private static boolean drawDrill(Building b, float burn, float a){
+        if(!(b instanceof mindustry.world.blocks.production.Drill.DrillBuild db) || !(b.block instanceof mindustry.world.blocks.production.Drill drill)) return false;
+        TextureRegion frame = drill.region, rotator = drill.rotatorRegion, top = drill.topRegion;
+        if(frame == null || !frame.found() || rotator == null || !rotator.found() || drawing == null) return false;
+        float spin = db.timeDrilled * drill.rotateSpeed;
+        boolean turning = db.warmup > 0.02f;
+        Draw.color(burn, 1f, 1f, a);
+        if(turning) maskBy(drawing, rotator, b.x, b.y, spin);
+        usePage(frame);
+        Draw.rect(frame, b.x, b.y);
+        if(turning){
+            maskBy(drawing, null, 0f, 0f, 0f);
+        }else{
+            // (blue 0.6: drawn turned - its edges' sided shading, read in the picture's own frame, would turn with it)
+            Draw.color(burn, 1f, 0.6f, a);
+            usePage(rotator);
+            Draw.rect(rotator, b.x, b.y, spin);
+        }
+        if(top != null && top.found()){
+            Draw.color(burn, 1f, 1f, a);
+            usePage(top);
+            Draw.rect(top, b.x, b.y);
+        }
+        return true;
+    }
+
+    /** Masks what is drawn next by a picture laid at that place and turn (null: no mask) - headMask for anything. */
+    private static void maskBy(arc.graphics.gl.Shader s, TextureRegion r, float x, float y, float rot){
+        Draw.flush();
+        s.bind();
+        if(r == null){
+            s.setUniformf("u_headMask", 0f);
+            return;
+        }
+        s.setUniformf("u_headMask", 1f);
+        s.setUniformf("u_pivot", x, y);
+        s.setUniformf("u_rot", Mathf.cosDeg(rot), Mathf.sinDeg(rot));
+        s.setUniformf("u_headUV", r.u, r.v, r.u2, r.v2);
+        s.setUniformf("u_headSize", r.width * Draw.scl * Draw.xscl, r.height * Draw.scl * Draw.yscl);
+        s.setUniformf("u_campos", Core.camera.position.x - Core.camera.width / 2f, Core.camera.position.y - Core.camera.height / 2f);
+        s.setUniformf("u_size", Core.camera.width, Core.camera.height);
+        s.setUniformf("u_screen", viewW(), viewH());
+    }
+
+    /** The masking by the head (headMask), in GLSL: discards a point that lies on the head's picture. */
+    static final String headMaskGlsl =
+        "uniform float u_headMask;\n" +
+        "uniform vec4 u_headUV;\n" +
+        "uniform vec2 u_headSize;\n" +
+        "bool underHead(vec2 world){\n" +
+        "    if(u_headMask < 0.5) return false;\n" +
+        "    vec2 r0 = world - u_pivot;\n" +
+        "    vec2 q = vec2(r0.x * u_rot.x + r0.y * u_rot.y, -r0.x * u_rot.y + r0.y * u_rot.x) / u_headSize + 0.5;\n" +
+        "    if(q.x <= 0.0 || q.y <= 0.0 || q.x >= 1.0 || q.y >= 1.0) return false;\n" +
+        "    return texture2D(u_texture, vec2(mix(u_headUV.x, u_headUV.z, q.x), mix(u_headUV.w, u_headUV.y, q.y))).a > 0.5;\n" +
+        "}\n";
+
     private static final float railShare = 0.125f;
 
     /** The two rails of a conveyor's picture (it faces right: the top and bottom eighth), by block id. */
@@ -628,7 +733,11 @@ public class SnowCover{
     private static TextureRegion[] rails(Block block){
         TextureRegion[] r = railRegions.get(block.id);
         if(r == null){
+            // (cut from the straight piece the game draws in the world, as the bends are: the block's icon is another
+            // picture, with an outline round it, and its edge eighths were more outline than rail - the straight belts'
+            // rails looked bare beside the snowy bends)
             TextureRegion icon = block.fullIcon;
+            if(block instanceof Conveyor conv && conv.regions != null && conv.regions.length > 0 && conv.regions[0] != null && conv.regions[0].length > 0 && conv.regions[0][0] != null && conv.regions[0][0].found()) icon = conv.regions[0][0];
             // (the rails are about an eighth of it: a quarter reached onto the belt, and snow lay on its edge)
             int w = icon.width, h = icon.height, q = Math.max(Math.round(h * railShare), 1);
             // (and the belt between them, for what settles there while it stands)
@@ -645,6 +754,54 @@ public class SnowCover{
      * passes of one frame (snow, spores) count the time once.
      */
     private static final arc.struct.IntFloatMap beltRest = new arc.struct.IntFloatMap(), beltSeen = new arc.struct.IntFloatMap();
+
+    /**
+     * How hot a building is of itself, 0 .. 1: hit hard (HitHeat), at work (HeatHaze: turrets firing, reactors,
+     * generators, furnaces), or holding a hot liquid - slag in a conduit or a turret ("would a pipe or turret with slag
+     * in it count as a heat source?"). Not through armour: the armoured conduits, conveyors and ducts keep it in.
+     */
+    static float ownHeat(Building b){
+        float own = Math.max(HitHeat.heatAt(b.pos()), HeatHaze.canBeHot(b.block) ? HeatHaze.heatOf(b) : 0f);
+        return Math.max(own, liquidHeat(b));
+    }
+
+    /**
+     * How far a hot building's warmth reaches, world units from its middle: a ring larger the larger it is; a pipe, a
+     * liquid router or a tank warmed only by what flows in it, hardly past its own edge (a slag conduit thawed a band two
+     * tiles wide either side: "the pipes had better be less").
+     */
+    static float warmReach(Building b){
+        float half = b.block.size * Vars.tilesize * 0.5f;
+        // (liquid bridges are not LiquidBlocks: ItemBridge, DirectionBridge)
+        if(b.block instanceof mindustry.world.blocks.liquid.LiquidBlock || b.block instanceof mindustry.world.blocks.liquid.LiquidBridge
+            || b.block instanceof mindustry.world.blocks.distribution.DirectionLiquidBridge) return half + 4f;
+        return half + 14f + b.block.size * 4f;
+    }
+
+    /** The heat of the liquid in it:by how much hotter than water it is (slag 1, water and oil none), and how full. */
+    static float liquidHeat(Building b){
+        // (not the derelict blocks a map comes with: they never update, and slag saved in them stayed hot for ever)
+        if(b.liquids == null || !b.block.hasLiquids || insulated(b.block) || b.team == mindustry.game.Team.derelict) return 0f;
+        // every hot liquid it holds, not only the one moved last (liquids.current() changes with every liquid put in
+        // or taken out); hot from 0.6 up - neoplasm's 0.54 is lukewarm, slag's 1 is hot
+        float best = 0f;
+        var all = Vars.content.liquids();
+        for(int i = 0; i < all.size; i++){
+            mindustry.type.Liquid l = all.get(i);
+            if(l.temperature <= 0.6f) continue;
+            float amount = b.liquids.get(l);
+            if(amount <= 0.001f) continue;
+            float full = amount / Math.max(b.block.liquidCapacity, 0.001f);
+            best = Math.max(best, Mathf.clamp((l.temperature - 0.6f) / 0.4f) * Mathf.clamp(full * 3f));
+        }
+        return best;
+    }
+
+    /** Armoured: plated and reinforced conduits (ArmoredConduit), armoured conveyors, armoured ducts. */
+    static boolean insulated(Block block){
+        return block instanceof mindustry.world.blocks.liquid.ArmoredConduit || block instanceof ArmoredConveyor
+            || (block instanceof Duct duct && duct.armored);
+    }
 
     private static float beltRest(Conveyor.ConveyorBuild c){
         int key = c.pos();
@@ -673,6 +830,8 @@ public class SnowCover{
         shader.setUniformf("u_size", Core.camera.width, Core.camera.height);
         shader.setUniformf("u_screen", viewW(), viewH());
         shader.setUniformf("u_texSize", texWidth(), texHeight());
+        pageNow = null;
+        inPass = true;
         // (turrets' heads are read in their own picture's frame, which turns with the head: no sun-sided light there,
         // the lumps keep only their narrow rim)
         // (in the head pass the sun is turned into each turret's frame as it is drawn - turnFrame; the edges' sided
@@ -695,9 +854,28 @@ public class SnowCover{
             if(a <= 0.01f) continue;
             drawShape(b, 0f, a);
         }
+        inPass = false;
         Draw.shader();
         Draw.color();
         if(sporeAmount > 0.01f && sporeShader != null) drawSpores();
+    }
+
+    /** The sprite page the shader's u_texSize is set for now (null: not yet in this pass); true while a pass draws. */
+    private static Texture pageNow;
+    private static boolean inPass;
+
+    /**
+     * The size of the sprite page that picture is on, for the shader (u_texSize: one texel is 1 / size). It was the size
+     * of Duo's page for everything - and a picture on a page of another size had its neighbouring texels read from
+     * far away, other sprites' outlines coming out as marks on it ("the marks only on blocks with a team colour,
+     * cores and containers - the same shape on every map"). Set again only when the page changes.
+     */
+    static void usePage(TextureRegion r){
+        if(!inPass || drawing == null || r == null || r.texture == null || r.texture == pageNow) return;
+        Draw.flush();
+        drawing.bind();
+        drawing.setUniformf("u_texSize", r.texture.width, r.texture.height);
+        pageNow = r.texture;
     }
 
     /** The size of the page the blocks' pictures are on (for the patches on a turret's head, which go round with it). */
@@ -724,10 +902,13 @@ public class SnowCover{
         if(b instanceof Conveyor.ConveyorBuild c && b.block instanceof Conveyor conv && conv.regions != null && conv.regions.length > 0){
             TextureRegion[] frames = conv.regions[Mathf.clamp(c.blendbits, 0, conv.regions.length - 1)];
             if(frames != null && frames.length > 0 && frames[0] != null){
+                usePage(frames[0]);
                 Draw.rect(frames[0], b.x, b.y, Vars.tilesize * c.blendsclx, Vars.tilesize * c.blendscly, c.rotation * 90f);
                 return;
             }
         }
+        // (a conduit or duct in the shape it has; the colour set by the caller stays)
+        if(isPipe(b) && pipeRect(b)) return;
         Draw.rect(b.block.fullIcon, b.x, b.y, b.block.rotate && !(b.block instanceof BaseTurret) ? b.rotdeg() : 0f);
     }
 
@@ -763,7 +944,7 @@ public class SnowCover{
      * part of the turrets is not covered - try a salvo"). The parts set their own colours, so how much lies there goes
      * in a uniform for them.
      */
-    private static void drawTurretParts(Building b, float burn, float a){
+    private static void drawTurretParts(Building b, float burn, float a, boolean under){
         if(!(b instanceof Turret.TurretBuild t) || !(b.block instanceof Turret turret) || drawing == null) return;
         if(!(turret.drawer instanceof mindustry.world.draw.DrawTurret dt) || dt.parts.size == 0) return;
         Draw.flush();
@@ -771,12 +952,7 @@ public class SnowCover{
         drawing.setUniformf("u_part", 1f);
         drawing.setUniformf("u_partA", a);
         drawing.setUniformf("u_partBurn", burn);
-        float p = t.progress();
-        var params = mindustry.entities.part.DrawPart.params.set(t.warmup(), 1f - p, 1f - p, t.heat, t.curRecoil, t.charge, t.x + t.recoilOffset.x, t.y + t.recoilOffset.y, t.rotation);
-        try{
-            for(int i = 0; i < dt.parts.size; i++) dt.parts.get(i).draw(params);
-        }catch(Throwable ignored){
-        }
+        drawParts(b, under);
         Draw.flush();
         drawing.bind();
         drawing.setUniformf("u_part", 0f);
@@ -784,14 +960,65 @@ public class SnowCover{
         Draw.color(burn, 0f, 1f, a);
     }
 
+    /**
+     * A turret's moving parts (DrawTurret.parts) drawn by the game's own part drawing with the values the game gives it,
+     * through whatever shader is bound (the parts set their own colours and blending). True if it has any.
+     */
+    static boolean drawParts(Building b, boolean under){
+        if(!(b instanceof Turret.TurretBuild t) || !(b.block instanceof Turret turret)) return false;
+        if(!(turret.drawer instanceof mindustry.world.draw.DrawTurret dt) || dt.parts.size == 0) return false;
+        float p = t.progress();
+        var params = mindustry.entities.part.DrawPart.params.set(t.warmup(), 1f - p, 1f - p, t.heat, t.curRecoil, t.charge, t.x + t.recoilOffset.x, t.y + t.recoilOffset.y, t.rotation);
+        // In here the layers do not count (Draw.z is passed over while a Draw.draw runnable is drawn): a part's dark
+        // outline and the parts drawn under the head came out on top of it. The outlines are turned off for the while,
+        // and the parts under the head (under) are drawn in a pass of their own, where the game draws them - just
+        // under the head (left out altogether, Duo's barrels were never covered: "the duo is slow, or gets none")
+        outlined.clear();
+        try{
+            for(int i = 0; i < dt.parts.size; i++) noOutline(dt.parts.get(i));
+            for(int i = 0; i < dt.parts.size; i++){
+                var part = dt.parts.get(i);
+                if(part.under != under) continue;
+                // (each barrel its own recoil, as the game gives it: Duo's two fire in turn)
+                int ri = part.recoilIndex;
+                params.setRecoil(ri >= 0 && t.curRecoils != null && ri < t.curRecoils.length ? t.curRecoils[ri] : t.curRecoil);
+                part.draw(params);
+            }
+        }catch(Throwable ignored){
+        }finally{
+            for(int i = 0; i < outlined.size; i++) outlined.get(i).outline = true;
+            outlined.clear();
+        }
+        return true;
+    }
+
+    /** Has that turret parts drawn under its head? */
+    static boolean hasUnder(Building b){
+        if(!(b.block instanceof Turret turret) || !(turret.drawer instanceof mindustry.world.draw.DrawTurret dt)) return false;
+        for(int i = 0; i < dt.parts.size; i++) if(dt.parts.get(i).under) return true;
+        return false;
+    }
+
+    private static final Seq<mindustry.entities.part.RegionPart> outlined = new Seq<>();
+
+    private static void noOutline(mindustry.entities.part.DrawPart part){
+        if(!(part instanceof mindustry.entities.part.RegionPart r)) return;
+        if(r.outline){
+            r.outline = false;
+            outlined.add(r);
+        }
+        if(r.children != null) for(int i = 0; i < r.children.size; i++) noOutline(r.children.get(i));
+    }
+
     /** A turret's base (DrawTurret.base), where the game draws it. */
     static void drawTurretBase(Building b){
-        if(b.block instanceof Turret turret && turret.drawer instanceof mindustry.world.draw.DrawTurret dt && dt.base != null && dt.base.found()) Draw.rect(dt.base, b.x, b.y);
+        if(b.block instanceof Turret turret && turret.drawer instanceof mindustry.world.draw.DrawTurret dt && dt.base != null && dt.base.found()){ usePage(dt.base); Draw.rect(dt.base, b.x, b.y); }
     }
 
     /** A turret's head as it is turned and pushed back (DrawTurret.drawTurret). */
     static void drawTurretHead(Building b){
         if(b instanceof Turret.TurretBuild t && b.block instanceof Turret turret && turret.region != null && turret.region.found()){
+            usePage(turret.region);
             Draw.rect(turret.region, b.x + t.recoilOffset.x, b.y + t.recoilOffset.y, t.drawrot());
         }
     }
@@ -832,14 +1059,22 @@ public class SnowCover{
                 turnFrame(b, b.x + t.recoilOffset.x, b.y + t.recoilOffset.y, t.drawrot());
                 // (green 0: the patches are read off the picture, so they turn with the head)
                 Draw.color(burn, 0f, 1f, a);
+                // the parts under the head first, where the head is not (Duo's barrels were never covered)
+                if(drawing != null && hasUnder(b)){
+                    headMask(drawing, b, true);
+                    drawTurretParts(b, burn, a, true);
+                    headMask(drawing, b, false);
+                    turnFrame(b, b.x + t.recoilOffset.x, b.y + t.recoilOffset.y, t.drawrot());
+                }
                 drawTurretHead(b);
-                drawTurretParts(b, burn, a);
+                drawTurretParts(b, burn, a, false);
             }else if(turnsOnBase(b) && b.block.region != null && b.block.region.found()){
                 // the other turning things - point defence, tractor beam, repair point, build tower: their head is
                 // their own picture turned (they were left bare: "the moving part of the turrets isn't covered")
                 float rot = ((mindustry.world.blocks.RotBlock)b).buildRotation() - 90f;
                 turnFrame(b, b.x, b.y, rot);
                 Draw.color(burn, 0f, 1f, a);
+                usePage(b.block.region);
                 Draw.rect(b.block.region, b.x, b.y, rot);
             }
             return;
@@ -852,7 +1087,7 @@ public class SnowCover{
             // the less of the belt's own is shown, and the items standing on it take theirs on their own shapes.
             float full = Math.min(c.len / 3f, 1f);
             if(rest > 0.01f && c.len > 0 && c.ids != null){
-                Draw.color(burn, 1f, 1f, a * rest);
+                Draw.color(burn, 1f, 0.7f, a * rest);
                 float rot = c.rotation * 90f;
                 for(int i = 0; i < c.len && i < c.ids.length; i++){
                     mindustry.type.Item item = c.ids[i];
@@ -860,6 +1095,7 @@ public class SnowCover{
                     // (where the game draws it: Conveyor.ConveyorBuild.draw)
                     float vx = Angles.trnsx(rot, Vars.tilesize), vy = Angles.trnsy(rot, Vars.tilesize);
                     float wx = Angles.trnsx(rot, -Vars.tilesize / 2f, c.xs[i] * Vars.tilesize / 2f), wy = Angles.trnsy(rot, -Vars.tilesize / 2f, c.xs[i] * Vars.tilesize / 2f);
+                    usePage(item.fullIcon);
                     Draw.rect(item.fullIcon, b.x + vx * c.ys[i] + wx, b.y + vy * c.ys[i] + wy, 5f, 5f);
                 }
             }
@@ -870,6 +1106,7 @@ public class SnowCover{
                 float len = b.block.size * Vars.tilesize, wide = len * railShare, off = (len - wide) / 2f;
                 float r = b.rotdeg();
                 Draw.color(burn, 1f, 0.6f, a);
+                usePage(rails[0]);
                 Draw.rect(rails[0], b.x + Angles.trnsx(r + 90f, off), b.y + Angles.trnsy(r + 90f, off), len, wide, r);
                 Draw.rect(rails[1], b.x + Angles.trnsx(r - 90f, off), b.y + Angles.trnsy(r - 90f, off), len, wide, r);
                 if(rest > 0.01f){
@@ -886,15 +1123,18 @@ public class SnowCover{
                 TextureRegion[] frames = conv.regions[Mathf.clamp(c.blendbits, 0, conv.regions.length - 1)];
                 if(frames != null && frames.length > 0 && frames[0] != null){
                     Draw.color(burn, 1f, 0.3f, a);
+                    usePage(frames[0]);
                     Draw.rect(frames[0], b.x, b.y, Vars.tilesize * c.blendsclx, Vars.tilesize * c.blendscly, c.rotation * 90f);
                     if(rest > 0.01f){
                         Draw.color(burn, 1f, 0.5f, a * rest);
+                        usePage(frames[0]);
                         Draw.rect(frames[0], b.x, b.y, Vars.tilesize * c.blendsclx, Vars.tilesize * c.blendscly, c.rotation * 90f);
                     }
                     return;
                 }
             }
         }
+        if(drawPipe(b, burn, a)) return;
         if(b instanceof Turret.TurretBuild){
             Draw.color(burn, 1f, 1f, a);
             drawTurretBase(b);
@@ -904,16 +1144,51 @@ public class SnowCover{
         // head in the pass after the heads)
         if(turnsOnBase(b)){
             Draw.color(burn, 1f, 1f, a);
+            usePage(baseOf(b.block));
             Draw.rect(baseOf(b.block), b.x, b.y);
             return;
         }
         if(b.block instanceof BaseTurret) return;
+        if(drawDrill(b, burn, a)) return;
         float rot = b.block.rotate ? b.rotdeg() : 0f;
         Draw.color(burn, 1f, rot % 360f == 0f ? 1f : 0.6f, a);
+        usePage(b.block.fullIcon);
         Draw.rect(b.block.fullIcon, b.x, b.y, rot);
     }
 
-    private static final java.nio.IntBuffer viewport = arc.util.Buffers.newIntBuffer(16);
+    /**
+     * A conduit or a duct: the top of the shape it has where it stands (straight, bent, joined - topRegions[blendbits]),
+     * turned and mirrored as the game draws it (Conduit/Duct draw: Draw.scl(xscl, yscl), rotation * 90). It was drawn
+     * as its icon, a straight piece: on a bend the cover lay over the clear corner of the picture ("snow on the
+     * see-through parts of the building's tile"). False for anything else.
+     */
+    private static boolean drawPipe(Building b, float burn, float a){
+        if(!isPipe(b)) return false;
+        // (blue 0.6: drawn turned - the edges' sided shading would turn with it)
+        Draw.color(burn, 1f, 0.6f, a);
+        return pipeRect(b);
+    }
+
+    private static boolean isPipe(Building b){
+        return b instanceof mindustry.world.blocks.liquid.Conduit.ConduitBuild || b instanceof mindustry.world.blocks.distribution.Duct.DuctBuild;
+    }
+
+    /** Draws a conduit's or duct's top in the colour set; false if it has none to draw. */
+    private static boolean pipeRect(Building b){
+        TextureRegion[] tops;
+        int bits, sx, sy;
+        if(b instanceof mindustry.world.blocks.liquid.Conduit.ConduitBuild c && b.block instanceof mindustry.world.blocks.liquid.Conduit conduit){
+            tops = conduit.topRegions; bits = c.blendbits; sx = c.xscl; sy = c.yscl;
+        }else if(b instanceof mindustry.world.blocks.distribution.Duct.DuctBuild d && b.block instanceof mindustry.world.blocks.distribution.Duct duct){
+            tops = duct.topRegions; bits = d.blendbits; sx = d.xscl; sy = d.yscl;
+        }else return false;
+        if(tops == null || bits < 0 || bits >= tops.length || tops[bits] == null || !tops[bits].found()) return false;
+        usePage(tops[bits]);
+        Draw.rect(tops[bits], b.x, b.y, Vars.tilesize * sx, Vars.tilesize * sy, b.rotation * 90f);
+        return true;
+    }
+
+    private static final java.nio.IntBuffer viewport =arc.util.Buffers.newIntBuffer(16);
 
     /**
      * The size of what is being drawn into, in pixels - the window, or the game's own buffer when it draws the world
@@ -1021,6 +1296,8 @@ public class SnowCover{
         Draw.z(z);
     }
 
+    private static Texture unitPage;
+
     private static void drawUnitSpores(Seq<Unit> list, float layer){
         if(list.isEmpty()) return;
         // Where the units are cut away around the cursor (Cutaway): no spores on those (a ghost of the unit in the
@@ -1029,11 +1306,18 @@ public class SnowCover{
         Draw.shader(sporeShader);
         Draw.flush();
         sporeShader.bind();
+        // (a unit is read in its own picture's frame: the turn and the seed left by the last turret or drill drawn
+        // swirled its clumps - uniforms stay set on the program)
+        sporeShader.setUniformf("u_pivot", 0f, 0f);
+        sporeShader.setUniformf("u_rot", 1f, 0f);
+        if(sporeShader.hasUniform("u_seed")) sporeShader.setUniformf("u_seed", 0f, 0f);
+        if(sporeShader.hasUniform("u_headMask")) sporeShader.setUniformf("u_headMask", 0f);
         sporeShader.setUniformf("u_campos", Core.camera.position.x - Core.camera.width / 2f, Core.camera.position.y - Core.camera.height / 2f);
         sporeShader.setUniformf("u_size", Core.camera.width, Core.camera.height);
         sporeShader.setUniformf("u_screen", viewW(), viewH());
         sporeShader.setUniformf("u_texSize", texWidth(), texHeight());
         sporeShader.setUniformf("u_time", Time.time / 60f);
+        unitPage = null;
         boolean smoke = !Vars.state.isPaused();
         for(int i = 0; i < list.size; i++){
             Unit u = list.get(i);
@@ -1043,6 +1327,13 @@ public class SnowCover{
             // (green 0: the patches read off the picture, so they go along with the unit)
             // (a unit is small: at the buildings' amount hardly a clump fitted on it - half again as many)
             Draw.color(bn, 0f, 0f, Math.min(s * 1.5f, 0.8f));
+            // (the page the unit's picture is on: its clumps are read off the picture by its texels)
+            if(u.type.region != null && u.type.region.texture != null && u.type.region.texture != unitPage){
+                Draw.flush();
+                sporeShader.bind();
+                sporeShader.setUniformf("u_texSize", u.type.region.texture.width, u.type.region.texture.height);
+                unitPage = u.type.region.texture;
+            }
             Draw.rect(u.type.region, u.x, u.y, u.rotation - 90f);
             if(smoke && bn > 0.1f && Mathf.chanceDelta(0.08f * bn * Math.min(s * 3f, 1f) * Math.max(u.hitSize / 8f, 1f))){
                 float r = u.hitSize * 0.4f;
@@ -1065,6 +1356,8 @@ public class SnowCover{
         sporeShader.setUniformf("u_screen", viewW(), viewH());
         sporeShader.setUniformf("u_texSize", texWidth(), texHeight());
         sporeShader.setUniformf("u_time", Time.time / 60f);
+        pageNow = null;
+        inPass = true;
         boolean smoke = !Vars.state.isPaused() && !headPass;
         for(int i = 0; i < builds.size; i++){
             Building b = builds.get(i);
@@ -1082,6 +1375,7 @@ public class SnowCover{
                 mindustry.content.Fx.fireSmoke.at(b.x + Mathf.range(r), b.y + Mathf.range(r));
             }
         }
+        inPass = false;
         Draw.shader();
         Draw.color();
     }

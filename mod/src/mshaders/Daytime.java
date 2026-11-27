@@ -51,15 +51,17 @@ public class Daytime{
         own = false;
 
         float e = Float.NaN;
-        if(Vars.state.isGame()){
+        if(ShaderMod.inWorld()){
             int forced = Core.settings.getInt("mshaders-test-daytime", -1);
+            // the scene behind the menu: the time of day it is set at, as the mod's own day (MenuWorld)
+            boolean menuTime = forced < 0 && MenuWorld.showing() && MenuWorld.daytime() >= 0f;
             var sector = Vars.state.hasSector() ? Vars.state.getSector() : null;
-            if(forced >= 0){
+            if(forced >= 0 || menuTime){
                 // test kit: 0 .. 100 = one day from midnight to midnight
-                float phase = forced / 100f;
+                float phase = (menuTime ? MenuWorld.daytime() : forced) / 100f;
                 e = -Mathf.cos(phase * Mathf.PI2);
                 rising = phase < 0.5f;
-                own = Core.settings.getBool(ShaderMod.dayOwn, false);
+                own = menuTime || Core.settings.getBool(ShaderMod.dayOwn, false);
             }else if(sector != null && sector.planet.updateLighting && !(sector.preset != null && sector.preset.noLighting)){
                 if(Core.settings.getBool(ShaderMod.dayCampaign, true)){
                     float rotation = sector.planet.getRotation();

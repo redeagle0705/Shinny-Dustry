@@ -23,7 +23,7 @@ public class ShaderMod extends Mod{
     powerOn = "mshaders-power", powerStrength = "mshaders-power-strength", factoriesOn = "mshaders-factories",
     orePeekOn = "mshaders-ore-peek", weatherOn = "mshaders-weather", weatherStrength = "mshaders-weather-strength", weatherRain = "mshaders-weather-rain", weatherSnow = "mshaders-weather-snow", weatherSand = "mshaders-weather-sand", weatherSpore = "mshaders-weather-spore", weatherSnowPile = "mshaders-weather-snow-pile", weatherSandPile = "mshaders-weather-sand-pile", weatherSporePile = "mshaders-weather-spore-pile", weatherFog = "mshaders-weather-fog", wetOn = "mshaders-wet", cloudsOn = "mshaders-clouds", cloudsStrength = "mshaders-clouds-strength",
     heatOn = "mshaders-heat", heatStrength = "mshaders-heat-strength", beamsOn = "mshaders-beams",
-    artOn = "mshaders-art", hitHeatOn = "mshaders-hit-heat", hitHeatStrength = "mshaders-hit-heat-strength", tracksOn = "mshaders-tracks", tracksStrength = "mshaders-tracks-strength", wakesOn = "mshaders-wakes", wakesStrength = "mshaders-wakes-strength",
+    artOn = "mshaders-art", fireOn = "mshaders-fire", menuWorldOn = "mshaders-menu-world", hitHeatOn = "mshaders-hit-heat", hitHeatStrength = "mshaders-hit-heat-strength", tracksOn = "mshaders-tracks", tracksStrength = "mshaders-tracks-strength", wakesOn = "mshaders-wakes", wakesStrength = "mshaders-wakes-strength",
     dayCampaign = "mshaders-day-campaign", dayOwn = "mshaders-day-own", dayMinutes = "mshaders-day-minutes", dayTint = "mshaders-day-tint",
     smokeShadowsOn = "mshaders-smoke-shadows", smokeShadowsStrength = "mshaders-smoke-shadows-strength",
     cutawayStyle = "mshaders-cutaway", cutawaySize = "mshaders-cutaway-size",
@@ -109,6 +109,12 @@ public class ShaderMod extends Mod{
         }catch(Throwable t){
             Log.err("[mshaders] engines stay as the game draws them", t);
         }
+        // the flames of furnaces as fire (FurnaceFire)
+        try{
+            Log.info("[mshaders] furnace flames drawn as fire: @ block(s)", FurnaceFire.install());
+        }catch(Throwable t){
+            Log.err("[mshaders] furnace flames stay as the game draws them", t);
+        }
 
         // the scene registers its frame hooks first, so its buffer is open before the others run
         scene.init();
@@ -132,6 +138,9 @@ public class ShaderMod extends Mod{
         OrePeek.init();
         PowerLines.init();
         Factories.init();
+        MenuWorld.init();
+        LogoLight.init();
+        Preview.init();
         try{
             Log.info("[mshaders] explosion effects with a shock wave: @", Blasts.install());
             Log.info("[mshaders] smoke effects with a shadow: @", SmokeShadows.install());
@@ -279,6 +288,7 @@ public class ShaderMod extends Mod{
             f.check(heatOn, true);
             f.slider(heatStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.check(beamsOn, true);
+            f.check(fireOn, true);
             f.check(hitHeatOn, true);
             f.slider(hitHeatStrength, 100, 0, 200, 10, i -> i == 0 ? off : i + "%");
             f.check(smokeShadowsOn, true);
@@ -299,6 +309,8 @@ public class ShaderMod extends Mod{
             f.slider(contrast, 108, 50, 150, 2, i -> i + "%");
             f.slider(warmth, 15, -100, 100, 5, i -> (i > 0 ? "+" : "") + i);
             f.slider(spare, 100, 0, 100, 5, i -> i == 0 ? off : i + "%");
+            // (after the sliders: they go by the switch above them, the colour pass)
+            f.check(menuWorldOn, true);
         });
 
         // The two switches for those who draw pictures are no effects: they sit with the game's own developer options
@@ -450,6 +462,14 @@ public class ShaderMod extends Mod{
             shieldsHex, lightsDetail, lightsMax, dayOwn}){
             Core.settings.remove(key);
         }
+    }
+
+    /**
+     * Is a world shown with the mod's effects: a game, or the scene behind the main menu (MenuWorld). The effects that
+     * looked at state.isGame() / isMenu() look here, so the menu's scene has them as a game has (rain, the day, ...).
+     */
+    static boolean inWorld(){
+        return Vars.state.isGame() || MenuWorld.showing();
     }
 
     static float percent(String key, int def){

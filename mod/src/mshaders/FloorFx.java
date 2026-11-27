@@ -150,7 +150,7 @@ public class FloorFx{
                 if(floor.cacheLayer == layer || floor.cacheLayer == CacheLayer.normal) floor.cacheLayer = want ? layer : CacheLayer.normal;
             }
         }
-        if(changed && Vars.state.isGame()) Vars.renderer.blocks.floor.reload();
+        if(changed && ShaderMod.inWorld()) Vars.renderer.blocks.floor.reload();
     }
 
     private int value(Tile tile){
@@ -253,6 +253,29 @@ public class FloorFx{
             dirty = false;
         }
         return texture;
+    }
+
+    /**
+     * The ores for another floor's shader (the ice's): the picture of kinds and the ore sheet on the texture units
+     * given, and the uniforms that read them - so an ore lying on ice stands up as it does on any other ground. Call
+     * before the shader binds its own pictures (a pending upload here goes through unit 2); leaves unit 0 active.
+     */
+    static void bindOres(arc.graphics.gl.Shader s, int kindsUnit, int oresUnit){
+        FloorFx fx = current;
+        Texture kinds = fx == null || !fx.ready ? null : fx.kinds();
+        Texture ores = kinds == null ? null : fx.oreSheet;
+        boolean lift = ores != null && Core.settings.getBool("mshaders-ore-lift", true);
+        if(kinds != null) kinds.bind(kindsUnit);
+        if(lift) ores.bind(oresUnit);
+        Gl.activeTexture(Gl.texture0);
+        if(s.hasUniform("u_kinds")) s.setUniformi("u_kinds", kindsUnit);
+        if(s.hasUniform("u_ores")) s.setUniformi("u_ores", oresUnit);
+        if(s.hasUniform("u_tiles")) s.setUniformf("u_tiles", kinds == null ? 0f : kinds.width, kinds == null ? 0f : kinds.height);
+        if(s.hasUniform("u_sheet")) s.setUniformf("u_sheet", lift ? ores.width : 0f, lift ? ores.height : 0f);
+        if(s.hasUniform("u_oreSize")) s.setUniformf("u_oreSize", fx == null ? 0f : fx.oreSize);
+        if(s.hasUniform("u_px")) s.setUniformf("u_px", Core.camera.width / Math.max(Core.graphics.getWidth(), 1));
+        if(s.hasUniform("u_relief")) s.setUniformf("u_relief", ShaderMod.percent(ShaderMod.floorRelief, 100));
+        if(s.hasUniform("u_sunDir")) s.setUniformf("u_sunDir", ShaderMod.sunX(), ShaderMod.sunY());
     }
 
     static class GroundShader extends SurfaceShader{

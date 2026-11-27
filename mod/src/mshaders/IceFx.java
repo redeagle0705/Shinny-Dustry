@@ -65,7 +65,7 @@ public class IceFx{
             // leave it alone if another mod has put the floor into a layer of its own
             if(floor.cacheLayer == layer || floor.cacheLayer == CacheLayer.normal) floor.cacheLayer = on ? layer : CacheLayer.normal;
         }
-        if(Vars.state.isGame()) Vars.renderer.blocks.floor.reload();
+        if(ShaderMod.inWorld()) Vars.renderer.blocks.floor.reload();
     }
 
     static class IceShader extends SurfaceShader{
@@ -78,10 +78,12 @@ public class IceFx{
 
         @Override
         public void apply(){
+            // the ores lying on the ice (units 6 and 7) - first: a pending upload of their picture binds it to unit 2
+            // on the way, where the mirror is bound next (after, it took the mirror's place for that frame)
+            FloorFx.bindOres(this, 6, 7);
             boolean mirror = Core.settings.getBool(ShaderMod.reflectOn, true) && scene.bindReflection(this);
             if(hasUniform("u_reflect")) setUniformf("u_reflect", mirror ? ShaderMod.percent(ShaderMod.reflectStrength, 100) : 0f);
             super.apply(); // u_campos, u_resolution, u_time, u_noise; ends with texture unit 0 active
-            if(hasUniform("u_ice")) setUniformf("u_ice", ShaderMod.percent(ShaderMod.iceStrength, 100));
-        }
+            if(hasUniform("u_ice")) setUniformf("u_ice", ShaderMod.percent(ShaderMod.iceStrength, 100));        }
     }
 }

@@ -46,7 +46,7 @@ final class Clock{
 
     /** Once a frame, before anything of it is drawn. */
     static void frame(){
-        boolean want = Core.settings.getBool(ShaderMod.devClock, false) && Vars.state.isGame();
+        boolean want = Core.settings.getBool(ShaderMod.devClock, false) && ShaderMod.inWorld();
         long now = System.nanoTime();
         if(want && !on) reset(now);
         if(!want && on) text = "";

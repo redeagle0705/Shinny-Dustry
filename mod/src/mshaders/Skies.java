@@ -152,7 +152,7 @@ public class Skies{
         thinStorm();
 
         float r = 0f, s = 0f, b = 0f, sp = 0f, fg = 0f;
-        if(Vars.state.isGame()){
+        if(ShaderMod.inWorld()){
             for(WeatherState w : Groups.weather){
                 float amount = w.opacity * Math.max(w.intensity, 0.5f);
                 if(w.weather == Weathers.rain) r = Math.max(r, amount);
@@ -196,19 +196,24 @@ public class Skies{
         if(forcedFog >= 0) fogging = forcedFog / 100f;
 
         // build up while it falls (up to how strongly it falls), go away slowly when it has stopped
-        float dt = Vars.state.isGame() && !Vars.state.isPaused() ? Time.delta / 60f : 0f;
+        float dt = ShaderMod.inWorld() && !Vars.state.isPaused() ? Time.delta / 60f : 0f;
         snow = towards(snow, snowing, dt);
         sand = towards(sand, blowing, dt);
         spores = towards(spores, sporing, dt);
         // (as deep as it rains; when it has stopped they stay and dry up slowly - they used to be gone the moment it stopped)
         if(rain > puddles) puddles = Math.min(rain, puddles + dt * rain / puddleFill);
         else puddles = Math.max(puddles - dt / puddleDry, rain > 0.01f ? Math.min(rain, puddles) : 0f);
-        if(!Vars.state.isGame()){
+        if(!ShaderMod.inWorld()){
             snow = 0f;
             sand = 0f;
             puddles = 0f;
             spores = 0f;
         }
+
+        // the scene behind the menu on a snowy map: the snow lies as after a long snowfall (time stands still there, so
+        // it would never settle by itself)
+        float lying = MenuWorld.snowLying();
+        if(lying > 0f) snow = Math.max(snow, lying);
 
         // forced values for the test kit: the weather and what lies on the ground both at once
         int forced = Core.settings.getInt("mshaders-test-puddles", -1);
@@ -291,8 +296,8 @@ public class Skies{
             made.put(weather, was = new float[]{density, noise ? 1f : 0f, weather.opacityMultiplier, maxAlpha, particles ? 1f : 0f});
         }
         int v = level(key);
-        boolean off = v <= levelOff && Vars.state.isGame();
-        float f = thins && v >= 0 && Core.settings.getBool(ShaderMod.weatherOn, true) && Vars.state.isGame() ? bigDust() : 1f;
+        boolean off = v <= levelOff && ShaderMod.inWorld();
+        float f = thins && v >= 0 && Core.settings.getBool(ShaderMod.weatherOn, true) && ShaderMod.inWorld() ? bigDust() : 1f;
         if(weather instanceof mindustry.type.weather.ParticleWeather p){
             // (the game draws  screen area / density  bits: off = a density so large that comes to none. 0 divided by
             // zero - it tried to draw countless drops, the screen turned to rain and the game all but froze)
@@ -340,7 +345,7 @@ public class Skies{
 
     /** Is the sandstorm drawn at a quarter size? (The test kit can turn it off to compare.) */
     static boolean lowSand(){
-        return Vars.state.isGame() && !Core.settings.getBool("mshaders-test-nolowsand", false);
+        return ShaderMod.inWorld() && !Core.settings.getBool("mshaders-test-nolowsand", false);
     }
 
     /** Queued with the frame (Trigger.draw) while a sandstorm is on. */
@@ -493,7 +498,7 @@ public class Skies{
     private static void easePiles(){
         piles = null;
         update();
-        if(sand <= 0f || scene == null || ease == null || !Vars.state.isGame()){
+        if(sand <= 0f || scene == null || ease == null || !ShaderMod.inWorld()){
             if(pileA != null){
                 pileA.dispose();
                 pileB.dispose();

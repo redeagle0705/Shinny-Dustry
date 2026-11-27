@@ -78,7 +78,7 @@ public class SmokeShadows{
             pool.addAll(used);
             used.clear();
             drawings.clear();
-            float strength = Core.settings.getBool(ShaderMod.smokeShadowsOn, true) && !Vars.state.isMenu()
+            float strength = Core.settings.getBool(ShaderMod.smokeShadowsOn, true) && !!ShaderMod.inWorld()
                 ? ShaderMod.percent(ShaderMod.smokeShadowsStrength, 100) * ShaderMod.daylight() : 0f;
             frameOn = strength > 0.01f;
             // light: many puffs of one cloud lie over each other

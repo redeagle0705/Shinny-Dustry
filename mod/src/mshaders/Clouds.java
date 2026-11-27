@@ -19,7 +19,7 @@ public class Clouds{
     /** How much the clouds show at this zoom, 0 .. 1: from about twice the furthest zoom out down to it. */
     static float fade(){
         // (off unless switched on: to someone who has just put the mod in, clouds over the map could be in the way)
-        if(!Core.settings.getBool(ShaderMod.cloudsOn, false) || !Vars.state.isGame()) return 0f;
+        if(!Core.settings.getBool(ShaderMod.cloudsOn, false) || !ShaderMod.inWorld()) return 0f;
         float min = Vars.renderer.minScale(), now = Vars.renderer.getDisplayScale();
         if(min <= 0f) return 0f;
         float far = now / min;   // 1 = as far out as it goes

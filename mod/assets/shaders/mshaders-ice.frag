@@ -15,6 +15,20 @@ uniform float u_time;        // game ticks (60 per second)
 uniform float u_ice;         // strength of the ice look, 1 = default
 uniform float u_reflect;     // reflection strength, 0 = off
 
+// The ores lying on the ice (FloorFx.bindOres - the same pictures as the ground shader's). An ore is drawn with its
+// floor, into this layer: here it got the ice's look and none of the relief the ground gives an ore elsewhere, and on
+// ice it lay flat ("on ice the height map is used less - and the ores got that too, they look different").
+uniform sampler2D u_kinds;   // one texel per tile: where the tile's ore sprite is (mshaders-ground.frag)
+uniform vec2 u_tiles;        // map size in tiles; 0 = no picture, no ores
+uniform sampler2D u_ores;    // the sprite sheet with the ore sprites
+uniform vec2 u_sheet;        // its size in pixels; 0 = none
+uniform float u_oreSize;     // how many pixels across an ore sprite is
+uniform float u_px;          // world units per screen pixel
+uniform float u_relief;      // strength of the ground's relief (the ore's is the same)
+uniform vec2 u_sunDir;       // direction towards the sun on the ground
+
+const float ORE_LIFT = 0.2;  // as in mshaders-ground.frag
+
 #include "mshaders-reflect.glsl"
 
 varying vec2 v_texCoords;
@@ -49,6 +63,22 @@ float cellBorder(vec2 x){
     return sqrt(second) - sqrt(nearest);
 }
 
+// (as in mshaders-ground.frag)
+vec4 tileBytes(vec2 world){
+    return floor(texture2D(u_kinds, (world + 4.0) / (8.0 * u_tiles)) * 255.0 + 0.5);
+}
+
+bool hasOre(vec4 bytes){
+    return mod(bytes.r, 32.0) + bytes.g + bytes.b + bytes.a > 0.5;
+}
+
+float oreOn(vec2 world, vec4 bytes){
+    if(!hasOre(bytes)) return 0.0;
+    vec2 corner = vec2(mod(bytes.r, 32.0) * 256.0 + bytes.g, bytes.b * 256.0 + bytes.a);
+    vec2 f = fract((world + 4.0) / 8.0);
+    return smoothstep(0.5, 0.9, texture2D(u_ores, (corner + vec2(f.x, 1.0 - f.y) * u_oreSize) / u_sheet).a);
+}
+
 void main(){
     // This shader runs over the whole screen. Where the layer has nothing (land, other floors), skip all the work.
     if(texture2D(u_texture, v_texCoords).a < 0.004){
@@ -61,6 +91,31 @@ void main(){
     vec2 world = v_texCoords * u_resolution + u_campos;
     vec2 eye = u_campos + u_resolution * 0.5;      // where the camera looks
     float t = u_time / 60.0;
+
+    // An ore on this tile: it stands up from the ice as from any ground - the relief of its own picture, and a step at
+    // its rim (lit on the sunward side, shaded on the other) - and keeps its own colour, not the ice's.
+    bool oreTile = u_tiles.x > 0.5 && u_sheet.x > 0.5 && hasOre(tileBytes(world));
+    float ore = 0.0;
+    if(oreTile){
+        ore = oreOn(world, tileBytes(world));
+        float near = 1.0 - smoothstep(0.45, 1.0, u_px);
+        if(u_relief > 0.001 && near > 0.0){
+            vec2 pace = u_sunDir * max(0.25, u_px);
+            vec2 reach = pace / u_resolution;
+            vec4 lit = texture2D(u_texture, v_texCoords + reach), shaded = texture2D(u_texture, v_texCoords - reach);
+            if(lit.a > 0.99 && shaded.a > 0.99){
+                float rise = dot(lit.rgb / lit.a - shaded.rgb / shaded.a, vec3(0.299, 0.587, 0.114));
+                vec2 sunward = world + pace, away = world - pace;
+                float up = oreOn(sunward, tileBytes(sunward)), down = oreOn(away, tileBytes(away));
+                float rim = up - down;
+                rise = rise * (1.0 - abs(rim)) + (ore > 0.5 ? rim : max(rim, 0.0)) * ORE_LIFT;
+                // (only the ore and the ice right at its rim: the ice itself stays flat)
+                float keep = max(ore, max(up, down));
+                color *= 1.0 + clamp(-rise * 2.2, -0.22, 0.28) * u_relief * keep * near;
+            }
+        }
+    }
+    vec3 plain = color;
 
     // depth: thicker, bluer ice in broad patches
     float thick = noise(world / 640.0 + 0.21) * 0.6 + noise(world / 290.0 + 0.67) * 0.4;
@@ -93,6 +148,8 @@ void main(){
         vec2 bend = vec2(noise(world / 150.0) - 0.5, noise(world / 150.0 + 0.5) - 0.5) * 1.2;
         color = reflected(color, world, bend, 0.9 + 0.5 * sheen, u_reflect * 0.55 * u_ice, u_reflect * 1.1 * u_ice);
     }
+    // the ore lies on the ice: no sheen, frost, cracks or mirror image on it
+    if(ore > 0.0) color = mix(color, plain, ore);
 
     gl_FragColor = vec4(color, base.a);
 }

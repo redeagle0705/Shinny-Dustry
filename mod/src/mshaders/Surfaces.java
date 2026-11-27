@@ -110,7 +110,7 @@ public class Surfaces{
     /** The second layer of a door: the sprite it has while it stands open. Of a thruster: its top, which turns with it. */
     private static final int ajar = 1, lid = 1;
     /** Conveyor sprites: Conveyor.regions, "@-#1-#2" with lengths {7, 4}. */
-    private static final int beltShapes = 7, beltFrames = 4;
+    private static final int beltShapes = 7, beltFrames = 4, conduitShapes = 5;
 
     /** The two kinds of picture, and the folders they are looked for in. */
     private static final int byNormal = 0, byHeight = 1;
@@ -214,7 +214,46 @@ public class Surfaces{
     }
 
     private static Fi find(int kind, String name){
-        return find(folders[kind], name);
+        Fi file = find(folders[kind], name);
+        // a normal map not drawn yet: a copy of the grey sprite put there to draw on, read as a map it shaded at random
+        // (the build leaves out those that are the same as their base in sprites-override - but not one without such a
+        // twin, and the game reads the watched folder as it is)
+        if(file != null && kind == byNormal && template(file)) return null;
+        return file;
+    }
+
+    /** By file and its date: true if it is a template, not a normal map. */
+    private static final ObjectMap<String, Boolean> templates = new ObjectMap<>();
+
+    /**
+     * True for a picture that is not a normal map yet: most of what it covers is no normal at all - a direction one unit
+     * long facing the viewer ((128, 128, 255) facing straight up). A sprite's greys, or Erekir's colours, are not.
+     */
+    static boolean template(Fi file){
+        String key = file.path() + "@" + file.lastModified();
+        Boolean known = templates.get(key);
+        if(known != null) return known;
+        boolean grey = false;
+        try{
+            Pixmap p = new Pixmap(file);
+            int seen = 0, flat = 0;
+            for(int y = 0; y < p.height; y++){
+                for(int x = 0; x < p.width; x++){
+                    int c = p.get(x, y);
+                    if((c & 0xff) < 128) continue;
+                    float nx = ((c >>> 24) - 128f) / 127f, ny = ((c >>> 16 & 0xff) - 128f) / 127f, nz = ((c >>> 8 & 0xff) - 128f) / 127f;
+                    seen++;
+                    // (not a direction one unit long that faces the viewer: a sprite's colour, not a normal)
+                    float len = (float)Math.sqrt(nx * nx + ny * ny + nz * nz);
+                    if(nz < -0.05f || Math.abs(len - 1f) > 0.2f) flat++;
+                }
+            }
+            p.dispose();
+            grey = seen > 0 && flat > seen * 0.25f; // (drawn maps: under 3% of it; half-drawn ones from 44%)
+        }catch(Throwable ignored){
+        }
+        templates.put(key, grey);
+        return grey;
     }
 
     private static Fi find(String folder, String name){
@@ -452,6 +491,13 @@ public class Surfaces{
         if(block instanceof Conveyor){
             String[] names = new String[beltShapes * beltFrames];
             for(int i = 0; i < names.length; i++) names[i] = block.name + "-" + i / beltFrames + "-" + i % beltFrames;
+            return names;
+        }
+        // a conduit: the pipe the game lays over the liquid is one of five shapes picked by what joins it (straight, bends,
+        // joins - Conduit.topRegions, "<name>-top-0" .. "-top-4"), turned and mirrored as a conveyor is
+        if(block instanceof mindustry.world.blocks.liquid.Conduit){
+            String[] names = new String[conduitShapes];
+            for(int i = 0; i < names.length; i++) names[i] = block.name + "-top-" + i;
             return names;
         }
         // rotator and top are parts of a drill; other blocks have only a base so far
@@ -979,6 +1025,14 @@ public class Surfaces{
             // ... drawn one tile large, mirrored where the game mirrors it (a bend to the other side, a join from the other side)
             layer(map, build.x, build.y, belt.blendsclx < 0, belt.blendscly < 0, build.rotation * 90f);
             if(belt.len > 0) carrying.add(belt);
+            return true;
+        }
+        if(build instanceof mindustry.world.blocks.liquid.Conduit.ConduitBuild pipe){
+            // Conduit.ConduitBuild.draw(): Draw.scl(xscl, yscl), then the top of its shape turned by rotation * 90
+            if(pipe.blendbits < 0 || pipe.blendbits >= conduitShapes) return false;
+            TextureRegion map = pick(of, pipe.blendbits);
+            if(map == null) return false;   // no picture for the shape this conduit has
+            layer(map, build.x, build.y, pipe.xscl < 0, pipe.yscl < 0, build.rotation * 90f);
             return true;
         }
         if(headed(block)){

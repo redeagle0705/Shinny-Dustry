@@ -96,9 +96,9 @@ public class Wetness{
 
     /** Before the frame (Scene, at Trigger.preDraw, before the gloss picture is sent): brings the wetness up to date. */
     static void update(Occluders occluders){
-        float time = Time.time, dt = Vars.state.isGame() && !Vars.state.isPaused() ? Math.min(Math.max(time - lastTime, 0f), 30f) : 0f;
+        float time = Time.time, dt = ShaderMod.inWorld() && !Vars.state.isPaused() ? Math.min(Math.max(time - lastTime, 0f), 30f) : 0f;
         lastTime = time;
-        boolean on = on() && Vars.state.isGame();
+        boolean on = on() && ShaderMod.inWorld();
         float r = on ? Math.min(Skies.rain * Skies.rainK(), 1f) : 0f;
         raining = r;
         if(r > wet) wet = Math.min(r, wet + dt * r / (soak * 60f));
@@ -221,7 +221,7 @@ public class Wetness{
             lastPoolKeep = 0f;
             return 0f;
         }
-        float heat = Math.max(HitHeat.heatAt(key), HeatHaze.canBeHot(b.block) ? HeatHaze.heatOf(b) : 0f);
+        float heat = SnowCover.ownHeat(b);
         float d = dried.get(key, 0f);
         // a building working away out of sight has been drying all along: hot when first seen, it is dry already
         // (else every smelter came into view soaked and steamed itself dry there and then)

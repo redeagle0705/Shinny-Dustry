@@ -75,7 +75,7 @@ public class Cutaway{
 
     private static void draw(){
         style = Core.settings.getInt(ShaderMod.cutawayStyle, 1);
-        if(style <= 0 || Vars.state.isMenu() || !placing()) return;
+        if(style <= 0 || !ShaderMod.inWorld() || !placing()) return;
         // (with the game's "pixelate" the units are drawn into a picture the size of the camera, not of the window:
         // the circle in window pixels would be in the wrong place)
         if(Vars.renderer.pixelate) return;

@@ -73,7 +73,7 @@ public class Beams{
     }
 
     private static void draw(){
-        if(!on() || Vars.state.isMenu()) return;
+        if(!on() || !ShaderMod.inWorld()) return;
         Core.camera.bounds(view);
         camera.set(view);
         view.grow(400f);

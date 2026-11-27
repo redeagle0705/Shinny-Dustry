@@ -20,6 +20,8 @@ import mindustry.ui.dialogs.SettingsMenuDialog.SettingsTable.*;
 class Folds{
     private final SettingsTable table;
     private Header current;
+    /** The switch the sliders under it belong to, for their preview pictures (Preview). */
+    private String lastSwitch;
 
     Folds(SettingsTable table){
         this.table = table;
@@ -33,7 +35,7 @@ class Folds{
     /** A slider that is shown only while the section is open. */
     void slider(String name, int def, int min, int max, int step, StringProcessor text){
         Core.settings.defaults(name, def);
-        table.pref(new Folded(current, new SliderSetting(name, def, min, max, step, text, null)));
+        table.pref(new Folded(current, new SliderSetting(name, def, min, max, step, text, null), name, lastSwitch));
     }
 
     /** A slider that is shown only while the section is open AND the setting "unlocked" is true: something to be found. */
@@ -56,7 +58,11 @@ class Folds{
     /** A switch that is shown only while the section is open. */
     void check(String name, boolean def){
         Core.settings.defaults(name, def);
-        table.pref(new Folded(current, new CheckSetting(name, def, null)));
+        lastSwitch = name;
+        CheckSetting setting = new CheckSetting(name, def, null);
+        // a setting that takes effect only at the next start: its name in red, saying so
+        if(Preview.needsRestart(name)) setting.title = "[scarlet]" + setting.title + " " + Core.bundle.get("mshaders.restart", "(restart needed)");
+        table.pref(new Folded(current, setting, name, null));
     }
 
     /** A button that is shown only while the section is open; its text is "setting.<name>.name". */
@@ -103,16 +109,30 @@ class Folds{
     static class Folded extends Setting{
         final Header header;
         final Setting inner;
+        /** Its own preview pictures, and those of the switch above it if it has none (Preview). */
+        final String own, fallback;
 
         Folded(Header header, Setting inner){
+            this(header, inner, null, null);
+        }
+
+        Folded(Header header, Setting inner, String own, String fallback){
             super(inner.name);
             this.header = header;
             this.inner = inner;
+            this.own = own;
+            this.fallback = fallback;
         }
 
         @Override
         public void add(SettingsTable table){
-            if(header == null || header.open()) inner.add(table);
+            if(header != null && !header.open()) return;
+            inner.add(table);
+            // the row just added: hovered, it shows what the setting does
+            if(own != null && table.getCells().size > 0){
+                var e = table.getCells().peek().get();
+                Preview.attach(e, own, fallback);
+            }
         }
     }
 }

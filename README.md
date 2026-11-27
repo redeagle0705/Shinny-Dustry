@@ -2,13 +2,13 @@
 
 Mindustry에 화면 효과만 더하는 Java 모드입니다. 콘텐츠는 추가하지 않고, 모든 효과는 **설정 → 셰이더**에서 하나씩 끌 수 있습니다.
 
-A visual-effects-only Java mod for Mindustry: water, reflections, directional shadows, lights stopped by blocks, and hand-drawn normal maps for blocks. Adds no content; every effect has a switch under Settings → Shaders. Desktop and Android (not iOS). Tested on v160.7 only.
+A visual-effects-only Java mod for Mindustry: water, reflections, directional shadows, lights stopped by blocks, and hand-drawn normal maps for blocks. Adds no content; every effect has a switch under Settings → Shaders. Desktop and Android (not iOS). Tested on v160.8 only.
 
 | 모두 끔 | 모두 켬 |
 |---|---|
 | ![효과를 모두 끈 화면](docs/images/all-off.png) | ![효과를 모두 켠 화면](docs/images/all-on.png) |
 
-> 아직 만드는 중입니다. 공식 **v160.7**에서만 시험했고, 그래픽 카드 한 종류에서만 돌려 봤습니다.
+> 아직 만드는 중입니다. 공식 **v160.8**에서만 시험했고, 그래픽 카드 한 종류에서만 돌려 봤습니다.
 >
 > **PC와 안드로이드용입니다. iOS에서는 설치되지 않습니다**(게임이 iOS에서 Java 모드를 받지 않음). 안드로이드는 0.1.1부터 되고, 폰 한 대에서만 확인했습니다(색 조명과 노멀맵 블록이 있는 화면에서 60~120fps). 최신 안드로이드 가운데에는 Java 모드 불러오기 자체를 막는 기기가 있습니다. 0.1.4는 같은 폰에서 다시 확인했습니다(FHD+, 모든 설정을 켠 아주 큰 맵에서 60fps). 0.1.5~0.1.7은 폰의 큰 기지에서 매우 느렸습니다(6~25fps): 모드가 그림을 가져오면 게임이 그림판을 두 장으로 나눠 짜서, 효과를 다 꺼도 그리기가 끊겼습니다. 0.1.8에서 고쳤고, 같은 폰으로 멀티 서버의 큰 기지에서 모든 설정을 켜고 100fps 이상을 확인했습니다. 느리면 설정의 조명 묶음에서 "빛 그림 크기"를 50%로 내리고(가장 무거운 단계의 계산이 4분의 1이 되고, 빛과 그늘의 경계가 조금 부드러워집니다), "광원 한도"를 낮추고, "유닛도 빛을 가림"을 꺼 보세요. 어느 효과가 무거운지는 게임 설정의 개발자 옵션에서 "셰이더: 단계별 시간 보기"를 켜면 화면 가운데에 단계마다 걸린 시간(ms)으로 나옵니다(켜 둔 동안은 평소보다 느립니다).
 

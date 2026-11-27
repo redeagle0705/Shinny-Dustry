@@ -50,7 +50,7 @@ public class PowerLines{
     }
 
     private static void draw(){
-        if(!Core.settings.getBool(ShaderMod.powerOn, true) || Vars.state.isMenu() || Mathf.zero(Renderer.laserOpacity)) return;
+        if(!Core.settings.getBool(ShaderMod.powerOn, true) || !ShaderMod.inWorld() || Mathf.zero(Renderer.laserOpacity)) return;
         float k = ShaderMod.percent(ShaderMod.powerStrength, 100);
         if(k <= 0f) return;
         Core.camera.bounds(view);

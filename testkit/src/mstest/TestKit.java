@@ -152,6 +152,7 @@ public class TestKit extends Mod{
     mindustry.gen.Bullet sweep;
     boolean beamWalls;
     boolean hitWalls, hitPlaced;
+    float warmCrafters = -1f;
     final arc.struct.Seq<mindustry.gen.Building> stoppedBelts = new arc.struct.Seq<>();
     final arc.struct.Seq<mindustry.gen.Unit> walkers = new arc.struct.Seq<>();
     float walkStart;
@@ -198,7 +199,35 @@ public class TestKit extends Mod{
     float turretTurn = 50f, turretWarm = Float.NaN;
     int joinX, joinY;
     long fpsStart, shotStart, lastFx, runStart = Time.millis();
-    String pendingDialog;
+    String pendingDialog, pendingPreview, pendingFold;
+
+    void fold(String v){
+        String title = Core.bundle.get("setting.mshaders-section-" + v + ".name", v);
+        var found = new arc.struct.Seq<arc.scene.ui.Button>();
+        findButtons(Vars.ui.settings, title, found);
+        found.each(arc.scene.Element::fireClick);
+        line("  fold " + v + ": " + found.size + " button(s)");
+    }
+
+    static void findButtons(arc.scene.Element e, String text, arc.struct.Seq<arc.scene.ui.Button> out){
+        if(e instanceof arc.scene.ui.Button b && labelled(b, text)) out.add(b);
+        else if(e instanceof arc.scene.Group g) g.getChildren().each(c -> findButtons(c, text, out));
+    }
+
+    static boolean labelled(arc.scene.Element e, String text){
+        if(e instanceof arc.scene.ui.Label l) return l.getText().toString().contains(text);
+        if(e instanceof arc.scene.Group g) return g.getChildren().contains(c -> labelled(c, text));
+        return false;
+    }
+
+    void showPreview(String v){
+        try{
+            var m = Vars.mods.mainLoader().loadClass("mshaders.Preview").getDeclaredMethod("show", String.class);
+            m.setAccessible(true);
+            m.invoke(null, v);
+            line("  preview " + v);
+        }catch(Throwable t){ line("  no preview: " + t); }
+    }
     int viewX, viewY, viewW, viewH;
     int baseX, baseY, baseW;
     boolean baseShore;
@@ -251,11 +280,13 @@ public class TestKit extends Mod{
             Vars.control.playMap(map, rules);
             // (also at the update, before the frame: the mod reads the camera at the start of the frame - Wetness - and
             // saw the place the game had eased it to, a frame's worth of edge left dry)
+            // (not in the menu: the scene behind it has its own camera - held at the test row there, every scene but the
+            // largest showed nothing but black)
             Events.run(Trigger.update, () -> {
-                if(camSet) Core.camera.position.set(camX, camY);
+                if(camSet && !Vars.state.isMenu()) Core.camera.position.set(camX, camY);
             });
             Events.run(Trigger.preDraw, () -> {
-                if(camSet) Core.camera.position.set(camX, camY);
+                if(camSet && !Vars.state.isMenu()) Core.camera.position.set(camX, camY);
                 if(construct && Vars.player.unit() != null && !Vars.player.unit().activelyBuilding()){
                     int tx = (int)(Core.camera.position.x / 8f) + 3 + (constructAt % 6), ty = (int)(Core.camera.position.y / 8f) + 3 + (constructAt / 6) % 3;
                     constructAt++;
@@ -270,6 +301,12 @@ public class TestKit extends Mod{
                     u.rotation(ang + 90f);
                     u.vel.set(wx - u.x, wy - u.y);
                     u.set(wx, wy);
+                }
+                if(warmCrafters >= 0f){
+                    // warmcrafters=W: every crafter of ours held at that warmup, each frame (as if at work)
+                    for(var bd : Vars.state.teams.get(Vars.player.team()).buildings){
+                        if(bd instanceof mindustry.world.blocks.production.GenericCrafter.GenericCrafterBuild g) g.warmup = warmCrafters;
+                    }
                 }
                 if(hitWalls && !Vars.state.isPaused()){
                     // three enemy walls above the middle: the left one under heavy fire, the middle one light, the right one none
@@ -443,6 +480,15 @@ public class TestKit extends Mod{
         if(pendingDialog != null && elapsed >= 0.25f){
             openSettings(pendingDialog);
             pendingDialog = null;
+            if(pendingFold != null){
+                fold(pendingFold);
+                pendingFold = null;
+            }
+            // (a preview asked for in the same shot: once the settings are open, as when the pointer comes onto it)
+            if(pendingPreview != null){
+                showPreview(pendingPreview);
+                pendingPreview = null;
+            }
         }
         if(elapsed >= 0.5f){
             if(fpsFrames == 0) fpsStart = Time.nanos();
@@ -646,6 +692,7 @@ public class TestKit extends Mod{
                 case "hot" -> hot = Boolean.parseBoolean(v);
                 case "smoke" -> smoke = Boolean.parseBoolean(v);
                 case "hitwalls" -> hitWalls = Boolean.parseBoolean(v);
+                case "warmcrafters" -> warmCrafters = Float.parseFloat(v);
                 case "lake" -> {
                     // lake=true: deep water all over the view (for units on water)
                     int cx = (int)(camX / Vars.tilesize), cy = (int)(camY / Vars.tilesize);
@@ -749,6 +796,39 @@ public class TestKit extends Mod{
                         line("  minScale " + Vars.renderer.minScale() + ", maxScale " + Vars.renderer.maxScale() + ", scale now " + Vars.renderer.getDisplayScale() + ", camera " + Core.camera.width + "x" + Core.camera.height);
                     }
                 }
+                case "loadsave" -> {
+                    // loadsave=PATH@X@Y: a save played (not as a sector), the camera on that tile
+                    String[] a = v.split("@");
+                    mindustry.io.SaveIO.load(Core.files.absolute(a[0]));
+                    Vars.state.rules.sector = null;
+                    Vars.state.set(mindustry.core.GameState.State.playing);
+                    if(a.length > 2){
+                        Core.camera.position.set(Float.parseFloat(a[1]) * Vars.tilesize, Float.parseFloat(a[2]) * Vars.tilesize);
+                        Vars.player.set(Core.camera.position);
+                    }
+                    if(a.length > 3 && a[3].equals("clear")){
+                        for(var w : mindustry.gen.Groups.weather.copy(new Seq<>())) w.remove();
+                    }
+                    StringBuilder ws = new StringBuilder();
+                    for(var w : mindustry.gen.Groups.weather) ws.append(w.weather.name).append(" ").append(w.intensity).append("/").append(w.opacity).append("; ");
+                    line("  loaded " + a[0] + " weather: " + ws + " rules weather " + Vars.state.rules.weather.size);
+                }
+                case "resave" -> {
+                    // resave=IN@OUT: a campaign save (copied into the test profile) written again with no sector, for a
+                    // scene behind the menu - loaded as a sector, the game would take it for that sector of the campaign
+                    String[] a = v.split("@");
+                    try{
+                        mindustry.io.SaveIO.load(Core.files.absolute(a[0]));
+                        String had = Vars.state.rules.sector == null ? "none" : Vars.state.rules.sector.planet.name + "-" + Vars.state.rules.sector.id;
+                        Vars.state.rules.sector = null;
+                        int mine = 0;
+                        for(var b : mindustry.gen.Groups.build) if(b.team == Vars.state.rules.defaultTeam) mine++;
+                        mindustry.io.SaveIO.write(Core.files.absolute(a[1]));
+                        line("  resaved " + a[0] + " (sector " + had + ", map " + Vars.world.width() + "x" + Vars.world.height() + ", buildings " + mindustry.gen.Groups.build.size() + ", own " + mine + ", weather " + Vars.state.rules.weather.size + ", lighting " + Vars.state.rules.lighting + ") -> " + a[1]);
+                    }catch(Throwable t){
+                        line("  could not resave " + a[0] + ": " + t);
+                    }
+                }
                 case "put" -> {
                     // put=name@dx@dy[@rotation]: one block (or boulder) that many tiles from where blockrow starts (row 9 above the test buildings)
                     String[] a = v.split("@");
@@ -759,13 +839,86 @@ public class TestKit extends Mod{
                         line("  put " + a[0] + " at " + t.x + "," + t.y);
                     }else line("  could not put " + v);
                 }
+                case "texpages" -> {
+                    // texpages=true: the sizes of the textures blocks' icons are on, and which blocks are not on duo's page
+                    var duoTex = mindustry.content.Blocks.duo.region.texture;
+                    line("  duo page " + duoTex.width + "x" + duoTex.height);
+                    int other = 0;
+                    for(var bl : Vars.content.blocks()){
+                        if(bl.fullIcon == null || bl.fullIcon.texture == null || bl.fullIcon.texture == duoTex) continue;
+                        if(other++ < 40) line("  other page: " + bl.name + " " + bl.fullIcon.texture.width + "x" + bl.fullIcon.texture.height);
+                    }
+                    line("  blocks on another page: " + other);
+                }
+                case "partsinfo" -> {
+                    // partsinfo=BLOCK: how that turret is drawn - its regions and its parts (class, under, layer, name)
+                    var bl = Vars.content.block(v);
+                    if(bl instanceof mindustry.world.blocks.defense.turrets.Turret tu && tu.drawer instanceof mindustry.world.draw.DrawTurret dt){
+                        line("  " + v + ": region " + tu.region + " base " + dt.base + " layer " + dt.turretLayer + " parts " + dt.parts.size);
+                        for(int pi = 0; pi < dt.parts.size; pi++){
+                            var part = dt.parts.get(pi);
+                            try{
+                                String s = "    part " + part.getClass().getName() + " under=" + part.under;
+                                if(part instanceof mindustry.entities.part.RegionPart rp) s += " suffix=" + rp.suffix + " layer=" + rp.layer + " layerOffset=" + rp.layerOffset + " mirror=" + rp.mirror;
+                                line(s);
+                            }catch(Throwable t){ line("    part ? " + t); }
+                        }
+                    }else line("  " + v + ": no DrawTurret");
+                }
+                case "heatturrets" -> {
+                    // heatturrets=H: every turret of ours as hot as if under fire (HitHeat.warm)
+                    int n = 0;
+                    try{
+                        var m = Vars.mods.mainLoader().loadClass("mshaders.HitHeat").getMethod("warm", int.class, float.class);
+                        for(var bd : Vars.state.teams.get(Vars.player.team()).buildings){
+                            if(bd instanceof mindustry.world.blocks.defense.turrets.Turret.TurretBuild){ m.invoke(null, bd.pos(), Float.parseFloat(v)); n++; }
+                        }
+                    }catch(Throwable t){ line("  no heat: " + t); }
+                    line("  heated " + n + " turret(s)");
+                }
+                case "fillliquid" -> {
+                    // fillliquid=NAME: every building of ours that holds liquids is filled with it
+                    var liq = Vars.content.liquid(v);
+                    int n = 0;
+                    if(liq != null) for(var bd : Vars.state.teams.get(Vars.player.team()).buildings){
+                        if(bd.liquids == null || !bd.block.hasLiquids) continue;
+                        bd.liquids.clear();
+                        bd.liquids.add(liq, bd.block.liquidCapacity);
+                        n++;
+                    }
+                    line("  filled " + n + " building(s) with " + v);
+                }
+                case "iconscan" -> {
+                    // iconscan=true: blocks whose icon (fullIcon) is solid where the picture drawn in the world (region) is clear
+                    int listed = 0, same = 0, sized = 0, tried = 0, failed = 0;
+                    for(var bl : Vars.content.blocks()){
+                        if(!bl.hasBuilding() || bl.fullIcon == null || bl.region == null || !bl.region.found()) continue;
+                        if(bl.fullIcon == bl.region){ same++; continue; }
+                        if(bl.fullIcon.width != bl.region.width || bl.fullIcon.height != bl.region.height){ sized++; continue; }
+                        tried++;
+                        try{
+                            byte[] pi = regionPixels(bl.fullIcon), pr = regionPixels(bl.region);
+                            int extra = 0, total = 0;
+                            for(int px = 3; px < pi.length && px < pr.length; px += 4){
+                                boolean i = (pi[px] & 0xff) > 127, r = (pr[px] & 0xff) > 127;
+                                if(i) total++;
+                                if(i && !r) extra++;
+                            }
+                            if(extra > total / 20){ line("  icon>region " + bl.name + " " + extra + "/" + total); listed++; }
+                        }catch(Throwable t){ if(failed++ == 0) line("  iconscan error: " + t); }
+                    }
+                    line("  iconscan: " + listed + " listed, " + tried + " tried, " + same + " same, " + sized + " other size, " + failed + " failed");
+                }
                 case "fillbelt" -> {
                     // fillbelt=ITEM: every conveyor gets a load of that item (put a wall at the end and they clog)
-                    var item = Vars.content.item(v);
+                    // (fillbelt=ITEM@N: N of them on each, 4 by default)
+                    String[] fa = v.split("@");
+                    var item = Vars.content.item(fa[0]);
+                    int many = fa.length > 1 ? Integer.parseInt(fa[1]) : 4;
                     int n = 0;
                     if(item != null) for(var bd : Vars.state.teams.get(Vars.player.team()).buildings){
                         if(bd instanceof mindustry.world.blocks.distribution.Conveyor.ConveyorBuild cb){
-                            for(int q = 0; q < 4; q++) if(cb.acceptStack(item, 1, null) > 0) cb.handleStack(item, 1, null);
+                            for(int q = 0; q < many; q++) if(cb.acceptStack(item, 1, null) > 0) cb.handleStack(item, 1, null);
                             n++;
                         }
                     }
@@ -1274,6 +1427,36 @@ public class TestKit extends Mod{
                     // closer than the game lets a player go (for looking at single pixels of a sprite)
                     if(Integer.parseInt(v) > Vars.renderer.maxZoomInGame) Vars.renderer.maxZoom = Vars.renderer.maxZoomInGame = Integer.parseInt(v);
                     Vars.renderer.setScale(Scl.scl(Integer.parseInt(v)));
+                }
+                case "menu" -> {
+                    // menu=true: out of the game to the main menu (as "quit"), for the menu's background
+                    Vars.logic.reset();
+                    line("  to the menu: " + Vars.state.getState());
+                }
+                case "preview" -> {
+                    if(pendingDialog != null){
+                        pendingPreview = v;
+                        continue;
+                    }
+                    showPreview(v);
+                }
+                case "previewold" -> {
+                    // preview=SETTING: the settings preview panel shows that setting's pictures (as when it is hovered)
+                    try{
+                        var m = Vars.mods.mainLoader().loadClass("mshaders.Preview").getDeclaredMethod("show", String.class);
+                        m.setAccessible(true);
+                        m.invoke(null, v);
+                        line("  preview " + v);
+                    }catch(Throwable t){ line("  no preview: " + t); }
+                }
+                // audiolog=1: when the shot is taken, the volumes the sound and music buses really have (the test
+                // cannot hear)
+                case "audiolog" -> audioAtShot = true;
+                case "fold" -> {
+                    // fold=ID: opens or closes the mod's settings section with that id (its header button pressed:
+                    // the page is built once, so the setting alone does not show it) - once the settings are open
+                    if(pendingDialog != null) pendingFold = v;
+                    else fold(v);
                 }
                 case "dialog" -> {
                     Vars.ui.settings.show();
@@ -2103,7 +2286,28 @@ public class TestKit extends Mod{
         }
     }
 
+    boolean audioAtShot;
+
+    void audioLog(){
+        try{
+            var vol = Class.forName("arc.audio.Soloud").getDeclaredMethod("idGetVolume", int.class);
+            var valid = Class.forName("arc.audio.Soloud").getDeclaredMethod("idValid", int.class);
+            var voices = Class.forName("arc.audio.Soloud").getDeclaredMethod("activeVoiceCount");
+            vol.setAccessible(true);
+            valid.setAccessible(true);
+            voices.setAccessible(true);
+            int s = Core.audio.soundBus.id, m = Core.audio.musicBus.id;
+            line("  audio: sound bus " + s + " valid " + valid.invoke(null, s) + " volume " + vol.invoke(null, s)
+                + ", music bus " + m + " valid " + valid.invoke(null, m) + " volume " + vol.invoke(null, m)
+                + ", voices " + voices.invoke(null) + ", sfxVolume " + Core.audio.sfxVolume);
+        }catch(Throwable t){ line("  audio: " + t); }
+    }
+
     void capture(String name){
+        if(audioAtShot){
+            audioLog();
+            audioAtShot = false;
+        }
         if(layersShot){
             line(layerTimer.report());
             layersShot = false;
@@ -2332,6 +2536,26 @@ public class TestKit extends Mod{
     String pendingSprites;
 
     /** spritefb=NAME+NAME..: each sprite drawn alone into a picture of its own size and saved (sprites/NAME.png), as the game has it. */
+    /** A region drawn into a buffer of its own size, read back (RGBA bytes). */
+    byte[] regionPixels(arc.graphics.g2d.TextureRegion region){
+        int w = region.width, h = region.height;
+        var fb = new arc.graphics.gl.FrameBuffer(w, h);
+        var before = new arc.math.Mat(Draw.proj());
+        Draw.flush();
+        fb.begin(Color.clear);
+        Draw.proj(new arc.math.Mat().setOrtho(0f, 0f, w, h));
+        Draw.blend(Blending.disabled);
+        Draw.color();
+        Draw.rect(region, w / 2f, h / 2f, w, h);
+        Draw.flush();
+        byte[] px = ScreenUtils.getFrameBufferPixels(0, 0, w, h, true);
+        fb.end();
+        Draw.blend();
+        Draw.proj(before);
+        fb.dispose();
+        return px;
+    }
+
     void spriteFb(String names){
         for(String name : names.split("[+]")){
             var region = Core.atlas.find(name);

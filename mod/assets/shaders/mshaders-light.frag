@@ -145,8 +145,10 @@ float reach(vec2 from, vec2 to, float lamp){
     float halfWidth = 0.5 * (abs(across.x) + abs(across.y));
     // A lamp shines out of the block it sits in - all of it, however large (a core's own corners used to stop the
     // core's light and left black tiles at its corners).
-    float ownReach = mod(lamp, 100.0);
-    if(ownReach < 0.01) ownReach = OWN + 0.7;
+    // (half the side of that building, in tiles; its own tiles are those within that square round the light - not a
+    // circle, which took in the blocks set beside it as well. Not known: the tile it is on.)
+    float ownHalf = mod(lamp, 100.0);
+    if(ownHalf < 0.01) ownHalf = 0.5;
     // A core lights through the blocks that touch it as well (containers set against it are part of it): the run of
     // blocks the walk ends in, when it ends at a core, lets the light through if it is no longer than this.
     float attached = lamp >= 100.0 ? 9.0 : 0.0;
@@ -169,7 +171,7 @@ float reach(vec2 from, vec2 to, float lamp){
                 run = 1.0;
                 runStart = t;
             }
-            bool spared = (starting && t < OWN) || (lampInside && len - t < ownReach);
+            bool spared = (starting && t < OWN) || (lampInside && max(abs(cell.x + 0.5 - q.x), abs(cell.y + 0.5 - q.y)) < ownHalf + 0.25);
             if(!spared){
                 float lateral = dot(p - (cell + 0.5), across);
                 float margin = halfWidth - abs(lateral);

@@ -79,6 +79,7 @@ public class Occluders{
     public void init(){
         Events.on(WorldLoadEvent.class, e -> rebuild());
         Events.on(TileChangeEvent.class, e -> changed(e.tile));
+        Events.run(Trigger.update, this::checkPieces);
         // a block that is drawn turned with its building has another outline now
         Events.on(BuildRotateEvent.class, e -> {
             if(e.build != null) changed(e.build.tile);
@@ -105,6 +106,11 @@ public class Occluders{
     /** What the second picture says about that tile (see shapePixmap). */
     private int shape(Tile tile){
         Block block = tile.block();
+        // a conveyor's, conduit's or duct's bend: the piece it has where it stands, turned and mirrored as drawn
+        if(tile.build != null && block.size == 1){
+            int piece = pieceSlot(tile.build);
+            if(piece != Integer.MIN_VALUE) return piece < 0 ? 0 : (piece & 0xff) << 24 | (piece >> 8 & 0xff) << 16 | 15;
+        }
         // only what stands: the low things units walk over (conveyors, ducts) cast next to no shadow anyway
         if(block == Blocks.air || tile.build == null || tile.build.tile == null || !block.solid || block.size > 16) return 0;
         int slot = silhouettes.slot(block, block.rotate && block.rotateDraw ? tile.build.rotation : 0);
@@ -112,6 +118,55 @@ public class Occluders{
         int ox = tile.x - (tile.build.tile.x + block.sizeOffset), oy = tile.y - (tile.build.tile.y + block.sizeOffset);
         if(ox < 0 || oy < 0 || ox >= block.size || oy >= block.size) return 0;
         return (slot & 0xff) << 24 | (slot >> 8 & 0xff) << 16 | (ox * 16 + oy) << 8 | block.size * 15;
+    }
+
+    /**
+     * The outline slot of the piece a conveyor, conduit or duct draws where it stands (Silhouettes.slot of a picture),
+     * -1 for a plain square; Integer.MIN_VALUE for anything else.
+     */
+    private int pieceSlot(mindustry.gen.Building build){
+        arc.graphics.g2d.TextureRegion region;
+        boolean fx, fy;
+        if(build instanceof mindustry.world.blocks.distribution.Conveyor.ConveyorBuild c && build.block instanceof mindustry.world.blocks.distribution.Conveyor conv){
+            if(conv.regions == null || c.blendbits < 0 || c.blendbits >= conv.regions.length || conv.regions[c.blendbits] == null || conv.regions[c.blendbits].length == 0) return -1;
+            region = conv.regions[c.blendbits][0];
+            fx = c.blendsclx < 0;
+            fy = c.blendscly < 0;
+        }else if(build instanceof mindustry.world.blocks.liquid.Conduit.ConduitBuild c && build.block instanceof mindustry.world.blocks.liquid.Conduit conduit){
+            if(conduit.topRegions == null || c.blendbits < 0 || c.blendbits >= conduit.topRegions.length) return -1;
+            region = conduit.topRegions[c.blendbits];
+            fx = c.xscl < 0;
+            fy = c.yscl < 0;
+        }else if(build instanceof mindustry.world.blocks.distribution.Duct.DuctBuild d && build.block instanceof mindustry.world.blocks.distribution.Duct duct){
+            if(duct.topRegions == null || d.blendbits < 0 || d.blendbits >= duct.topRegions.length) return -1;
+            region = duct.topRegions[d.blendbits];
+            fx = d.xscl < 0;
+            fy = d.yscl < 0;
+        }else return Integer.MIN_VALUE;
+        if(region == null || !region.found()) return -1;
+        return silhouettes.slot(region, 1, build.rotation, fx, fy);
+    }
+
+    /** Tiles of conveyors, conduits and ducts: their piece changes with what joins them, which sends no event of its own. */
+    private final IntSeq pieces = new IntSeq();
+
+    /** Looks over the pieces now and then (from the update, not while a frame is drawn: an outline is drawn to be read). */
+    private void checkPieces(){
+        if(shapePixmap == null || pieces.isEmpty() || Core.graphics.getFrameId() % 10 != 0) return;
+        for(int i = 0; i < pieces.size; i++){
+            Tile tile = Vars.world.tile(pieces.get(i));
+            if(tile == null || tile.x >= shapePixmap.width || tile.y >= shapePixmap.height) continue;
+            int now = shape(tile);
+            if(shapePixmap.get(tile.x, tile.y) != now){
+                shapePixmap.set(tile.x, tile.y, now);
+                changedAt(tile.x, tile.y);
+            }
+        }
+    }
+
+    private static boolean isPiece(Tile tile){
+        var b = tile.build;
+        return b instanceof mindustry.world.blocks.distribution.Conveyor.ConveyorBuild || b instanceof mindustry.world.blocks.liquid.Conduit.ConduitBuild || b instanceof mindustry.world.blocks.distribution.Duct.DuctBuild;
     }
 
     private static int gloss(Tile tile){
@@ -187,6 +242,7 @@ public class Occluders{
         glossPixmap = new Pixmap(w, h);
         floorPixmap = new Pixmap(w, h);
         doors.clear();
+        pieces.clear();
         for(Tile tile : Vars.world.tiles){
             // row 0 of the pixmap is v = 0 of the texture, so tile y needs no flipping
             pixmap.set(tile.x, tile.y, value(tile));
@@ -194,6 +250,7 @@ public class Occluders{
             glossPixmap.set(tile.x, tile.y, gloss(tile));
             floorPixmap.set(tile.x, tile.y, floor(tile));
             if(tile.block().solidifes) doors.add(tile.pos());
+            if(isPiece(tile)) pieces.add(tile.pos());
         }
         floorTexture = new Texture(floorPixmap);
         floorTexture.setFilter(TextureFilter.linear, TextureFilter.linear);
@@ -235,6 +292,9 @@ public class Occluders{
         boolean listed = doors.contains(pos);
         if(tile.block().solidifes && !listed) doors.add(pos);
         else if(!tile.block().solidifes && listed) doors.removeValue(pos);
+        boolean piece = isPiece(tile), had = pieces.contains(pos);
+        if(piece && !had) pieces.add(pos);
+        else if(!piece && had) pieces.removeValue(pos);
         changedAt(tile.x, tile.y);
     }
 

@@ -65,7 +65,7 @@ public class Wakes{
 
     /** Where units in water have moved since the last look: foam behind them, every so far. */
     private static void walk(){
-        if(!on() || !Vars.state.isGame() || Vars.state.isPaused()) return;
+        if(!on() || !ShaderMod.inWorld() || Vars.state.isPaused()) return;
         for(Unit u : Groups.unit){
             if(u.dead() || u.isFlying()) continue;
             var floor = u.floorOn();
@@ -102,7 +102,7 @@ public class Wakes{
 
     private static void update(){
         map = null;
-        if(!on() || fade == null || !Vars.state.isGame()){
+        if(!on() || fade == null || !ShaderMod.inWorld()){
             stamps.clear();
             free();
             return;

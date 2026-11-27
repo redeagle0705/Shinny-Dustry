@@ -34,6 +34,26 @@ function Build-JavaMod([string]$name, [string]$dir, [string]$meta = "") {
             if ((Test-Path $base) -and ((Get-FileHash $_.FullName).Hash -eq (Get-FileHash $base).Hash)) {
                 Remove-Item -Force $_.FullName
                 Write-Output "left out (not drawn yet): normals\$rel"
+                return
+            }
+            # one with no twin there: left out if most of it is no normal (as Surfaces.template: not a direction one
+            # unit long facing the viewer - a sprite's greys or colours)
+            Add-Type -AssemblyName System.Drawing
+            $bmp = [Drawing.Bitmap]::FromFile($_.FullName)
+            $seen = 0; $flat = 0
+            try {
+                for ($y = 0; $y -lt $bmp.Height; $y++) { for ($x = 0; $x -lt $bmp.Width; $x++) {
+                    $c = $bmp.GetPixel($x, $y)
+                    if ($c.A -lt 128) { continue }
+                    $seen++
+                    $nx = ($c.R - 128) / 127.0; $ny = ($c.G - 128) / 127.0; $nz = ($c.B - 128) / 127.0
+                    $len = [Math]::Sqrt($nx * $nx + $ny * $ny + $nz * $nz)
+                    if ($nz -lt -0.05 -or [Math]::Abs($len - 1) -gt 0.2) { $flat++ }
+                } }
+            } finally { $bmp.Dispose() }
+            if ($seen -gt 0 -and $flat -gt $seen * 0.25) {   # (drawn maps: under 3%; half-drawn ones from 44%)
+                Remove-Item -Force $_.FullName
+                Write-Output "left out (not drawn yet, no normals in it): normals\$rel"
             }
         }
     }

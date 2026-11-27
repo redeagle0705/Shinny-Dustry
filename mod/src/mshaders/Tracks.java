@@ -66,7 +66,7 @@ public class Tracks{
 
     /** Where the ground units have stepped since the last look: a print every so far they have moved. */
     private static void walk(){
-        if(!on() || !Vars.state.isGame() || Vars.state.isPaused()) return;
+        if(!on() || !ShaderMod.inWorld() || Vars.state.isPaused()) return;
         for(Unit u : Groups.unit){
             if(!u.isGrounded() || u.type.hovering || u.dead()) continue;
             float size = u.hitSize;
@@ -114,7 +114,7 @@ public class Tracks{
 
     private static void update(){
         map = null;
-        if(!on() || fade == null || !Vars.state.isGame()){
+        if(!on() || fade == null || !ShaderMod.inWorld()){
             stamps.clear();
             free();
             return;

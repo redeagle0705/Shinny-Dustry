@@ -92,7 +92,7 @@ public class Pulses{
     }
 
     private static void look(){
-        if(!on() || Vars.state.isMenu()) return;
+        if(!on() || !ShaderMod.inWorld()) return;
         long frame = Core.graphics.getFrameId();
         Rect view = Core.camera.bounds(Tmp.r1);
         if(frame - lastLook >= 10){

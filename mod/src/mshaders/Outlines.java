@@ -147,6 +147,9 @@ public class Outlines{
      * ({@link Was}).
      */
     public static void watch(){
+        // (with "the mod's own sprites" off, none of them - the watched folder's neither: it brought them back over the
+        // game's own all the same, "with the mod's sprites off it still loads the mod's")
+        if(!ArtSwitch.on) return;
         long now = Time.millis();
         if(now < nextLook) return;
         nextLook = now + 500;
@@ -181,6 +184,7 @@ public class Outlines{
 
     /** At the start of the game: the sprites of the watched folder, if there is one, in place. */
     public static void takeWatched(){
+        if(!ArtSwitch.on) return;
         try{
             Fi watch = Surfaces.watched();
             Fi folder = watch == null ? null : watch.child("sprites-override");
@@ -228,6 +232,7 @@ public class Outlines{
      * @return how many sprites, or -1 if that failed
      */
     public static int reloadNow(){
+        if(!ArtSwitch.on) return 0;
         try{
             Fi watch = Surfaces.watched();
             Fi folder = watch == null ? null : watch.child("sprites-override");

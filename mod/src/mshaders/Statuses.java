@@ -31,7 +31,7 @@ public class Statuses{
     }
 
     private static void draw(){
-        if(!Core.settings.getBool(ShaderMod.statusesOn, true) || Vars.state.isMenu()) return;
+        if(!Core.settings.getBool(ShaderMod.statusesOn, true) || !ShaderMod.inWorld()) return;
         float k = ShaderMod.percent(ShaderMod.statusesStrength, 100);
         if(k <= 0f) return;
         Core.camera.bounds(view);

@@ -359,10 +359,10 @@ void main(){    vec2 world = v_texCoords * u_resolution + u_campos;
         }
         // The same for a core: its light sits in its middle, and lit it from inside - every face turned to the
         // middle bright, every face turned outwards dark. A light that sits in a core (Scene.lampCode: 100 and up,
-        // below 1000; the last two digits = half the core's diagonal in tiles + 0.3) leaves out the square the core
+        // below 1000; the last two digits = half the core's side in tiles) leaves out the square the core
         // stands on. Everything around the core it lights as before.
         if(u_coreOwn > 0.5 && u_colors[i].a >= 100.0 && u_colors[i].a < 1000.0){
-            float reach = (mod(u_colors[i].a, 100.0) - 0.3) / 0.7072 * 4.0;   // half the side of the core, world units
+            float reach = mod(u_colors[i].a, 100.0) * 8.0;   // half the side of the core, world units
             vec2 away = abs(world - l.xy);
             strength *= smoothstep(reach - 1.0, reach + 0.5, max(away.x, away.y));
             if(strength <= 0.0) continue;

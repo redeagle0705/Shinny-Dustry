@@ -61,6 +61,9 @@ public class Scene{
 
     /** The light limit of this frame: the setting, within what the shaders can take. */
     private int lightLimit(){
+        // the scene behind the menu stands still: as many as the shaders take ("in the menu all is paused - more lights
+        // than the most: with so many blocks they blink")
+        if(MenuWorld.showing()) return shaderLights;
         return Math.max(8, Math.min(Core.settings.getInt(ShaderMod.lightsMax, 64), shaderLights));
     }
 
@@ -510,7 +513,7 @@ public class Scene{
         // the picture that effect was drawing, and for that frame the map of blocks was stretched over the whole
         // screen: red bars and a red wash flashing while building ("the whole screen sparkles when I place").
         Events.run(Trigger.preDraw, () -> {
-            if(Vars.state.isGame()){
+            if(ShaderMod.inWorld()){
                 Gl.activeTexture(Gl.texture0);
                 // how wet the blocks are: written into the gloss picture, sent just below
                 Wetness.update(occluders);
@@ -526,6 +529,7 @@ public class Scene{
                 Gl.activeTexture(Gl.texture0);
             }
         });
+        active = this;
         Events.run(Trigger.preDraw, this::begin);
         Events.run(Trigger.draw, this::queue);
         Events.run(Trigger.postDraw, Clock.timed("end", this::end));
@@ -1002,6 +1006,23 @@ public class Scene{
         for(Kept b : kept){
             if(frame - b.used > 600 && (b.getWidth() > 2 || b.getHeight() > 2)) b.resize(2, 2);
         }
+    }
+
+    /** The scene that draws the world (for MenuWorld: a drawing of its world that failed half way). */
+    static Scene active;
+
+    /**
+     * A drawing of the world that threw half way (MenuWorld catches it): the buffer opened on preDraw is closed
+     * without being shown, so what is drawn after it reaches the screen again.
+     */
+    void abort(){
+        if(!capturing) return;
+        capturing = false;
+        try{
+            scene.end();
+        }catch(Throwable ignored){
+        }
+        if(tap != null) tap.capture = tap.takeover = false;
     }
 
     private void end(){
@@ -1482,7 +1503,14 @@ public class Scene{
             // lights just outside the view still count: their light, and for the deepening their wider surroundings
             float reach = r * 2.8f;
             boolean inView = Math.abs(d[o] - cx) < hw + reach && Math.abs(d[o + 1] - cy) < hh + reach;
-            scores[i] = inView ? r * d[o + 6] : -1f;
+            // (lights of the same strength - a base full of the same block - are told apart by where they are, by a hair:
+            // taken in the order they were reported, which changes from frame to frame, the ones at the limit got in
+            // and out by turns, and blinked)
+            int hash = ((int)d[o] * 73856093) ^ ((int)d[o + 1] * 19349663);
+            hash ^= hash >>> 13;
+            hash *= 0x5bd1e995;
+            float tie = ((hash >>> 8) & 0xffff) / 65535f;
+            scores[i] = inView ? r * d[o + 6] * (1f + 0.0002f * tie) : -1f;
             if(inView) visible++;
         }
         int limit = lightLimit();
@@ -1533,7 +1561,10 @@ public class Scene{
     private static float lampCode(float x, float y){
         mindustry.gen.Building build = Vars.world.buildWorld(x, y);
         if(build == null) return 0f;
-        float own = Math.min(Math.max(build.block.size * 0.7072f + 0.3f, 2.2f), 99f);
+        // half the side of the building, in tiles: the light shader lets its own light out of that square only (as a
+        // circle of at least 2.2 tiles it also took in half the blocks beside it - a turret set by a smelter cast only a
+        // thin stick of a shadow from the smelter's light: "the shadow comes out like a chopstick")
+        float own = Math.min(build.block.size * 0.5f, 99f);
         return own + (build.block instanceof mindustry.world.blocks.storage.CoreBlock ? 100f : 0f);
     }
 

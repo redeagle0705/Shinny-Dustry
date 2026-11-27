@@ -93,7 +93,7 @@ public class HeatHaze{
 
     /** For the last step of the frame: u_heats (x, y, reach, how hot), u_heat (strength). */
     static void apply(Shader s){
-        float strength = Vars.state.isGame() && on() ? ShaderMod.percent(ShaderMod.heatStrength, 100) : 0f;
+        float strength = ShaderMod.inWorld() && on() ? ShaderMod.percent(ShaderMod.heatStrength, 100) : 0f;
         // Far out the shimmer moves the picture by less than a pixel: it cannot be seen, and nothing is worked out
         // (on a large base zoomed out it was a millisecond a frame for nothing).
         float px = Core.camera.width / Math.max(Core.graphics.getWidth(), 1);

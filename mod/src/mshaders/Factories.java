@@ -48,7 +48,7 @@ public class Factories{
     }
 
     private static void draw(){
-        if(!Core.settings.getBool(ShaderMod.factoriesOn, true) || Vars.state.isMenu()) return;
+        if(!Core.settings.getBool(ShaderMod.factoriesOn, true) || !ShaderMod.inWorld()) return;
         Core.camera.bounds(view);
         long frame = Core.graphics.getFrameId();
         if(frame - lastLook >= 10){

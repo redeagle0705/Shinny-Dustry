@@ -110,9 +110,39 @@ public class Silhouettes{
         return region;
     }
 
+    /** Shapes of pieces that are not the block's own picture (a conveyor's bend, ...): by picture, then turn | mirror bits. */
+    private final ObjectMap<TextureRegion, IntIntMap> pieces = new ObjectMap<>();
+
+    /**
+     * Where the outline of that picture is, drawn one block large, mirrored (in its own frame) and then turned (0..3
+     * quarter turns to the left) as the game draws it - for pieces whose shape is picked by what joins them: a
+     * conveyor's, conduit's or duct's bends. (Their tiles were squares to the shadows: on a bend the clear corner of
+     * the picture had the square's shade in it - "where does this shadow that stays come from?")
+     * @return slot x | slot y << 8; -1 for a plain square
+     */
+    public int slot(TextureRegion region, int size, int turned, boolean flipX, boolean flipY){
+        if(region == null) return none;
+        IntIntMap of = pieces.get(region);
+        if(of == null) pieces.put(region, of = new IntIntMap());
+        int key = (turned & 3) | (flipX ? 4 : 0) | (flipY ? 8 : 0);
+        int known = of.get(key, Integer.MIN_VALUE);
+        if(known != Integer.MIN_VALUE) return known == none ? none : known & 0xffff;
+        int made = none;
+        try{
+            if(!failed) made = make(region, size, turned & 3, flipX, flipY);
+        }catch(Throwable t){
+            Log.err("[mshaders] a piece's sprite cannot be read, its shadow stays square", t);
+            failed = true;
+        }
+        of.put(key, made);
+        return made == none ? none : made & 0xffff;
+    }
+
     private int make(Block block, int turned){
-        TextureRegion region = outline(block);
-        int size = block.size;
+        return make(outline(block), block.size, turned, false, false);
+    }
+
+    private int make(TextureRegion region, int size, int turned, boolean flipX, boolean flipY){
         if(region == null || !region.found() || size < 1 || size > 16) return none;
         // only sprites that are as large as the block (a sprite of another size says nothing about the tiles)
         if(region.width < 8 || region.width != region.height || Math.abs(region.width - size * 32f) > 2f) return none;
@@ -146,6 +176,9 @@ public class Silhouettes{
                 // where this texel is on the sprite as drawn unturned
                 int si = turned == 0 ? i : turned == 1 ? j : turned == 2 ? n - 1 - i : n - 1 - j;
                 int sj = turned == 0 ? j : turned == 1 ? n - 1 - i : turned == 2 ? n - 1 - j : i;
+                // (mirrored in the picture's own frame, before it is turned: Draw.rect with a negative width or height)
+                if(flipX) si = n - 1 - si;
+                if(flipY) sj = n - 1 - sj;
                 int x0 = (int)(si * per), x1 = Math.max((int)((si + 1) * per), x0 + 1), y0 = (int)(sj * per), y1 = Math.max((int)((sj + 1) * per), y0 + 1);
                 int sum = 0, count = 0;
                 for(int y = y0; y < y1 && y < w; y++){
@@ -169,7 +202,7 @@ public class Silhouettes{
             rowTall = 0;
         }
         if(nextY + size > cells){
-            if(!failed) Log.warn("[mshaders] no room left for the outline of @, its shadow stays square", block.name);
+            if(!failed) Log.warn("[mshaders] no room left for an outline, its shadow stays square");
             return none;
         }
         int sx = nextX, sy = nextY;

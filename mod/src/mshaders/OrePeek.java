@@ -32,7 +32,7 @@ public class OrePeek{
     }
 
     private static void draw(){
-        if(!Core.settings.getBool(ShaderMod.orePeekOn, true) || Vars.state.isMenu()) return;
+        if(!Core.settings.getBool(ShaderMod.orePeekOn, true) || !ShaderMod.inWorld()) return;
         var input = Vars.control.input;
         boolean placing = input != null && (input.block != null || !input.selectPlans.isEmpty());
         float wx = Float.isNaN(testX) ? Core.input.mouseWorldX() : testX, wy = Float.isNaN(testY) ? Core.input.mouseWorldY() : testY;
